@@ -238,16 +238,24 @@ func (p *Provisioner) Run() error {
 		}()
 	}
 
-	// Optional broker tunnel. If BROKER_URL is set, we phone home so
-	// devices can reach us through the broker; the local listener
-	// stays up regardless so direct ops + tests still work.
-	if p.config.BridgeURL != "" {
+	// Optional bridge tunnel. Three paths in to dialing:
+	//
+	//   - prod, fresh enroll: AGENTRY_ENROLL_TOKEN + AGENTRY_ENROLL_URL
+	//     are set; AGENTRY_BRIDGE_URL is empty. BootstrapClusterCert
+	//     enrolls, persists the cert + the bridge URL the enroll
+	//     response carried, returns the bundle.
+	//   - prod, restart with cert already on disk: env may not have
+	//     the token; bundle.BridgeURL is loaded from disk.
+	//   - dev: CertDir empty, AGENTRY_BRIDGE_URL set explicitly to a
+	//     local http://… bridge in DEV_MODE.
+	//
+	// We start the bridge agent if EITHER a CertDir was configured
+	// (prod) OR AGENTRY_BRIDGE_URL was set in env (dev override).
+	if p.config.CertDir != "" || p.config.BridgeURL != "" {
 		if p.config.ClusterID == "" {
-			log.Fatalf("provisioner: BROKER_URL set but CLUSTER_ID is empty")
+			log.Fatalf("provisioner: AGENTRY_CLUSTER_NAME is required for the bridge tunnel")
 		}
-		// In prod (CertDir set), enroll + load the mTLS bundle before
-		// the dial loop starts. Dev mode (CertDir empty) keeps the
-		// plain-HTTP dial path so local-loop testing still works.
+		bridgeURL := p.config.BridgeURL
 		var tlsConf *tls.Config
 		if p.config.CertDir != "" {
 			bundle, err := BootstrapClusterCert(bgCtx, p.config)
@@ -259,11 +267,19 @@ func (p *Provisioner) Run() error {
 				log.Fatalf("provisioner: build mTLS config: %v", err)
 			}
 			go RunCertRenewer(bgCtx, p.config, bundle, tlsConf)
+			// Env override wins; otherwise honour what the control
+			// plane told us at enroll time (persisted in the bundle).
+			if bridgeURL == "" {
+				bridgeURL = bundle.BridgeURL
+			}
 		}
-		bc := NewBrokerClient(p.config.BridgeURL, p.config.ClusterID, p.Handler(), tlsConf)
+		if bridgeURL == "" {
+			log.Fatalf("provisioner: cannot determine bridge URL — set AGENTRY_BRIDGE_URL or ensure the enroll response carried bridge_url")
+		}
+		bc := NewBrokerClient(bridgeURL, p.config.ClusterID, p.Handler(), tlsConf)
 		go func() {
 			if err := bc.Run(bgCtx); err != nil && err != context.Canceled {
-				log.Printf("broker tunnel exited: %v", err)
+				log.Printf("bridge tunnel exited: %v", err)
 			}
 		}()
 	}

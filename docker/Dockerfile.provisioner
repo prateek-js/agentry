@@ -1,26 +1,64 @@
-# AD-Sandbox Provisioner — manages sandbox Pods in Kubernetes
+# agentry/sandbox-provisioner — runs on the user's machine,
+# enrolls with the agentry control plane, and manages sandbox
+# containers via the local Docker daemon.
 #
 # Build:
-#   docker build -t ad-sandbox-provisioner:latest -f docker/Dockerfile.provisioner .
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#       -t ghcr.io/agentry/sandbox-provisioner:latest \
+#       -f docker/Dockerfile.provisioner .
 #
-# Run:
-#   docker run -d -p 8002:8002 \
-#     -v ~/.kube/config:/root/.kube/config:ro \
-#     -e K8S_NAMESPACE=default \
-#     -e SANDBOX_IMAGE=agentry/runtime:latest \
-#     -e NODE_HOST=host.docker.internal \
-#     ad-sandbox-provisioner:latest
+# Run (the one-liner the dashboard hands to the user):
+#   docker run -d --name agentry-provisioner --restart=unless-stopped \
+#       -v /var/run/docker.sock:/var/run/docker.sock \
+#       -v agentry-data:/var/lib/agentry-provisioner \
+#       -e AGENTRY_ENROLL_TOKEN=tok_... \
+#       -e AGENTRY_CLUSTER_NAME=my-laptop \
+#       -e AGENTRY_ENROLL_URL=https://app.agentry.run/api/v1/enroll \
+#       ghcr.io/agentry/sandbox-provisioner:latest
+#
+# What the image does at startup:
+#
+#   1. If /var/lib/agentry-provisioner/cluster.crt exists and is
+#      not expired, reuse it. (Restart-safe.)
+#   2. Else, hit the control plane's /api/v1/enroll with the env
+#      token, persist the returned cert + key + ca.
+#   3. Open the mTLS tunnel to the bridge URL from the enroll
+#      response.
+#   4. Serve the provisioner HTTP API to inbound traffic from the
+#      bridge (sandbox create/run/delete/forward/etc).
+#
+# The image does NOT need root. It does need to talk to the Docker
+# daemon — mount /var/run/docker.sock from the host.
 
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /build
+# Cache dep downloads as a separate layer.
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /sandbox-provisioner ./cmd/sandbox-provisioner
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w" \
+    -o /provisioner ./cmd/provisioner
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /sandbox-provisioner /usr/local/bin/sandbox-provisioner
+# ca-certificates so HTTPS calls to app.agentry.run / bridge.agentry.run
+# verify against public roots. Tini gives us proper SIGTERM forwarding.
+RUN apk add --no-cache ca-certificates tini
+
+COPY --from=builder /provisioner /usr/local/bin/agentry-provisioner
+
+# Persistent state lands here. Single Docker volume in the run command
+# binds to /var/lib/agentry-provisioner; cert bundle + lockfile-like
+# state survive container restarts.
+ENV AGENTRY_CERT_DIR=/var/lib/agentry-provisioner
+ENV PROVISIONER_ADDR=:8002
+ENV BACKEND=docker
+ENV NODE_HOST=host.docker.internal
+ENV SANDBOX_IMAGE=ghcr.io/agentry/runtime:latest
 
 EXPOSE 8002
-CMD ["sandbox-provisioner"]
+
+# tini as PID 1 for clean signal handling; the provisioner binary
+# does its own enroll-on-first-boot, no separate entrypoint script
+# needed.
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/agentry-provisioner"]

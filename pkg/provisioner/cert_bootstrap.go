@@ -40,13 +40,25 @@ type EnrollResponse struct {
 }
 
 // ClusterCertBundle is what we keep on disk: a PEM cert chain, the
-// matching ECDSA private key, and the CA cert the broker uses to sign
-// device certs (we add it to our RootCAs when dialing the broker so
-// the LetsEncrypt-issued server cert chain is independently verified).
+// matching ECDSA private key, and the CA cert the bridge uses to
+// validate this client (we add it to our RootCAs when dialing the
+// bridge so its LetsEncrypt-issued server cert chain is
+// independently verified).
+//
+// BridgeURL is captured from the enroll response on first enrollment
+// and pinned to the bundle so subsequent (cert-already-on-disk) starts
+// don't need an AGENTRY_BRIDGE_URL env var. Persisted alongside the
+// cert as bridge_url.txt — a plain string, no parsing.
 type ClusterCertBundle struct {
-	CertPath string
-	KeyPath  string
-	CAPath   string
+	CertPath      string
+	KeyPath       string
+	CAPath        string
+	BridgeURLPath string
+
+	// BridgeURL is the dial target the bridge published at enroll
+	// time. Filled in by BootstrapClusterCert on both the fresh-enroll
+	// and reload paths (read from BridgeURLPath on reload).
+	BridgeURL string
 }
 
 // BootstrapClusterCert ensures we have a usable mTLS bundle for the
@@ -87,15 +99,19 @@ func BootstrapClusterCert(ctx context.Context, cfg Config) (*ClusterCertBundle, 
 	}
 
 	bundle := &ClusterCertBundle{
-		CertPath: filepath.Join(cfg.CertDir, "cluster.crt"),
-		KeyPath:  filepath.Join(cfg.CertDir, "cluster.key"),
-		CAPath:   filepath.Join(cfg.CertDir, "ca.crt"),
+		CertPath:      filepath.Join(cfg.CertDir, "cluster.crt"),
+		KeyPath:       filepath.Join(cfg.CertDir, "cluster.key"),
+		CAPath:        filepath.Join(cfg.CertDir, "ca.crt"),
+		BridgeURLPath: filepath.Join(cfg.CertDir, "bridge_url.txt"),
 	}
 
 	// Fast-path: existing cert still valid.
 	if cert, err := loadCertIfValid(bundle.CertPath); err == nil && cert != nil {
 		log.Printf("provisioner: reusing existing cluster cert CN=%s (expires %s)",
 			cert.Subject.CommonName, cert.NotAfter.Format(time.RFC3339))
+		if raw, rerr := os.ReadFile(bundle.BridgeURLPath); rerr == nil {
+			bundle.BridgeURL = strings.TrimSpace(string(raw))
+		}
 		return bundle, nil
 	}
 
@@ -136,6 +152,12 @@ func BootstrapClusterCert(ctx context.Context, cfg Config) (*ClusterCertBundle, 
 	}
 	if err := writeSecretFile(bundle.CAPath, []byte(resp.CACertPem)); err != nil {
 		return nil, fmt.Errorf("write CA: %w", err)
+	}
+	if resp.BridgeURL != "" {
+		if err := writeSecretFile(bundle.BridgeURLPath, []byte(resp.BridgeURL+"\n")); err != nil {
+			return nil, fmt.Errorf("write bridge_url: %w", err)
+		}
+		bundle.BridgeURL = resp.BridgeURL
 	}
 
 	log.Printf("provisioner: enrolled, cert valid until %s, written to %s",
