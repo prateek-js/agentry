@@ -1,0 +1,195 @@
+# syntax=docker/dockerfile:1.7
+#
+# ad-sandbox runtime image.
+#
+# Design notes:
+#   - Multi-stage: builder compiles a fully-static Go binary; runtime
+#     starts from python:3.13-slim so we inherit Python + pip without
+#     paying the full Ubuntu base tax.
+#   - BuildKit cache mounts (--mount=type=cache) keep the apt, pip, and
+#     Go module caches *outside* the final image. Rebuilds are seconds;
+#     final image is just the artifacts.
+#   - Single RUN per logical install group: apt-get install + cleanup
+#     run together so an interrupted layer can't leave a half-populated
+#     dpkg cache lingering in the final fs.
+#   - tini as PID 1 instead of supervisord — we run a single binary now,
+#     and tini's job (reap zombies, forward signals) is exactly what we
+#     need with no config file overhead.
+#
+# Build:
+#   docker build -t agentry/runtime:latest -f docker/Dockerfile .
+#
+# Run:
+#   docker run -d -p 8080:8080 agentry/runtime:latest
+
+# ─── Stage 1: Compile Go runtime ─────────────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+
+# Cache the module graph independently of the source tree so a code
+# change doesn't force a re-download.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+# CGO_ENABLED=0 + -trimpath = fully static, reproducible binary.
+# -ldflags strip the symbol table and DWARF data (~3-5 MB saved).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w" \
+        -o /out/sandbox-runtime ./cmd/sandbox-runtime
+
+# ─── Stage 2: Runtime image ──────────────────────────────────────────────────
+FROM python:3.13-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    WORKSPACE=/workspace \
+    NODE_PATH=/usr/lib/node_modules
+
+# Trimmed system layer. Notes on what we *don't* install:
+#   - tar:   already in python:3.13-slim's base
+#   - wget:  curl covers every fetch we need
+#   - gnupg: NodeSource's setup script uses signed-by URLs over HTTPS
+#            and doesn't need a separate gpg binary on disk
+#   - build-essential: pip wheels cover the common case; users can
+#            install on demand if they need to compile from source
+ARG NODE_VERSION=22.12.0
+ARG TARGETARCH
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        iproute2 \
+        jq \
+        procps \
+        tini \
+        unzip \
+        xz-utils \
+        # buildah builds OCI images rootlessly inside the sandbox.
+        # crun is the OCI runtime buildah delegates `RUN` steps to.
+        # Without it, every Dockerfile RUN fails with `: exec: no command`
+        # because buildah's runtime field stays empty.
+        # fuse-overlayfs is the storage driver buildah needs;
+        # netavark + slirp4netns set up the build-time container
+        # networking buildah expects even when building scratch images;
+        # binfmt-support + qemu-user-static let us cross-build
+        # linux/amd64 images from an arm64 host (the common Mac dev case).
+        buildah \
+        crun \
+        fuse-overlayfs \
+        netavark \
+        slirp4netns \
+        qemu-user-static \
+        binfmt-support \
+        # nftables: the provisioner spawns a CAP_NET_ADMIN sidecar that
+        # shares this container's netns and runs `nft -f -` to install
+        # the per-sandbox egress filter. The main process never has
+        # NET_ADMIN, so the LLM inside can't rewrite the rules.
+        nftables \
+    ; \
+    # Node.js as an upstream binary tarball. Much smaller than the
+    # NodeSource deb (which bundles bonus tooling we don't use), and
+    # avoids the apt overhead of pulling in libicu et al twice.
+    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+        amd64) NODE_ARCH=x64; AWS_ARCH=x86_64 ;; \
+        arm64) NODE_ARCH=arm64; AWS_ARCH=aarch64 ;; \
+        *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+        -o /tmp/node.tar.xz; \
+    mkdir -p /opt/node; \
+    tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1; \
+    rm /tmp/node.tar.xz; \
+    # Trim Node's bundled npm docs / man pages — saves ~15 MB and we
+    # never surface them.
+    rm -rf /opt/node/share/doc /opt/node/share/man /opt/node/share/systemtap; \
+    rm -rf /opt/node/lib/node_modules/npm/docs /opt/node/lib/node_modules/npm/man; \
+    ln -s /opt/node/bin/node /usr/local/bin/node; \
+    ln -s /opt/node/bin/npm /usr/local/bin/npm; \
+    ln -s /opt/node/bin/npx /usr/local/bin/npx; \
+    # AWS CLI v2 — official installer. The apt `awscli` package is
+    # still v1 on bookworm; v2 is required for the modern auth /
+    # `aws ecr get-login-password` flow most callers expect.
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip; \
+    unzip -q /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
+    rm -rf /tmp/awscliv2.zip /tmp/aws; \
+    # ipykernel for the /v1/code interpreter. --no-deps would shave a
+    # few MB but breaks output rendering; the full dep tree is ~80 MB
+    # and worth it for a real Jupyter experience.
+    pip install --no-cache-dir 'ipykernel>=6,<7'; \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* ~/.cache
+
+# Buildah configuration for rootless operation with fuse-overlayfs.
+# - storage.conf points at fuse-overlayfs so we don't need privileged
+#   overlay mounts (which require CAP_SYS_ADMIN and don't work nested).
+# - registries.conf gives short names a sane default; users can add
+#   their own registries by writing to /etc/containers/registries.conf.d/.
+# - containers.conf clears default_ulimits — buildah's defaults set
+#   RLIMIT_NPROC=1048576 on the build container, which the outer
+#   sandbox Docker container won't grant. With the override empty, the
+#   build container inherits whatever ulimits buildah itself has.
+RUN mkdir -p /etc/containers && \
+    printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+        > /etc/containers/storage.conf && \
+    printf 'unqualified-search-registries = ["docker.io"]\nshort-name-mode = "permissive"\n' \
+        > /etc/containers/registries.conf && \
+    printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' \
+        > /etc/containers/policy.json && \
+    printf '[containers]\ndefault_ulimits = []\n' \
+        > /etc/containers/containers.conf
+
+# Runtime binary, security hardening, and credential plumbing.
+COPY --from=builder /out/sandbox-runtime /usr/local/bin/sandbox-runtime
+COPY docker/lockdown.sh /opt/sandbox/lockdown.sh
+COPY docker/build-image /usr/local/bin/build-image
+COPY docker/sandbox-init.sh /usr/local/bin/sandbox-init
+COPY docker/sandbox-creds.sh /etc/profile.d/sandbox-creds.sh
+# Operator-curated cheat-sheets the LLM is expected to read on first
+# touch — see /etc/sandbox/docs/README.md for the index.
+COPY docker/docs /etc/sandbox/docs
+
+# Apply filesystem hardening + install the restricted shell.
+# lockdown.sh is idempotent and best-effort; it's safe to run at build
+# time and only mutates rare paths (perms on /etc/shadow, sandbox user).
+RUN chmod +x /opt/sandbox/lockdown.sh /usr/local/bin/build-image \
+              /usr/local/bin/sandbox-init && \
+    chmod 0644 /etc/profile.d/sandbox-creds.sh && \
+    /opt/sandbox/lockdown.sh
+
+# Workspace directories. 1777 = world writable + sticky bit so files
+# survive uid switches but can't be deleted by other tenants if we
+# ever go multi-user. /etc/sandbox/creds is the canonical mount point
+# for host-provided credentials (trino.json, aws/, xdp.json …); when
+# nothing is mounted, the directory exists but is empty.
+RUN mkdir -p /workspace /outputs /tmp/sandbox /etc/sandbox/creds && \
+    chmod 1777 /workspace /outputs /tmp/sandbox && \
+    chmod 0755 /etc/sandbox /etc/sandbox/creds
+
+WORKDIR /workspace
+EXPOSE 8080
+
+# tini handles PID 1 responsibilities (zombie reaping, signal
+# forwarding). `--` is the conventional separator between tini flags
+# and the command tini should exec.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# sandbox-init registers qemu binfmt interpreters (best-effort) then
+# exec's sandbox-runtime. Lets cross-arch buildah builds work without
+# any setup from the LLM.
+CMD ["/usr/local/bin/sandbox-init"]

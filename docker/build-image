@@ -1,0 +1,51 @@
+#!/bin/bash
+# build-image — thin wrapper around `buildah bud` for sandbox callers.
+#
+# Three conveniences baked in:
+#   1. --platform linux/amd64 by default (XDP runs amd64; this lets
+#      us cross-build on arm64 Mac dev hosts via qemu-user-static).
+#   2. --build-context creds=/etc/sandbox/creds so Dockerfiles can do
+#         COPY --from=creds trino.json /etc/sandbox/creds/trino.json
+#      without the host having to bind-mount creds into the build dir.
+#   3. --isolation=chroot — required when running buildah inside Docker.
+#      The default OCI isolation tries to enable cgroup v2 controllers
+#      via /sys/fs/cgroup/cgroup.subtree_control, which is read-only
+#      inside the sandbox container; chroot mode skips that step and
+#      gives equivalent semantics for COPY / RUN / ENV / etc.
+#
+# Everything else (--tag, the context dir, --file, --build-arg …)
+# passes straight through. Examples:
+#
+#   build-image --tag my-app:latest .
+#   build-image --tag my-app:latest -f Dockerfile.prod ./src
+#   build-image --platform linux/arm64 --tag my-app:arm64 .   # override
+set -euo pipefail
+
+PLATFORM="${BUILD_IMAGE_PLATFORM:-linux/amd64}"
+CREDS_DIR="${BUILD_IMAGE_CREDS_DIR:-/etc/sandbox/creds}"
+
+# If the caller passes their own --platform / --isolation we let them
+# win — buildah accepts the last value, but we'd rather not emit ours
+# at all so the command line stays clean.
+user_platform=0
+user_isolation=0
+for a in "$@"; do
+    case "$a" in
+        --platform|--platform=*)   user_platform=1 ;;
+        --isolation|--isolation=*) user_isolation=1 ;;
+    esac
+done
+
+cmd=(buildah bud --layers)
+if [ "$user_platform" = "0" ]; then
+    cmd+=(--platform "$PLATFORM")
+fi
+if [ "$user_isolation" = "0" ]; then
+    cmd+=(--isolation=chroot)
+fi
+if [ -d "$CREDS_DIR" ]; then
+    cmd+=(--build-context "creds=$CREDS_DIR")
+fi
+cmd+=("$@")
+
+exec "${cmd[@]}"

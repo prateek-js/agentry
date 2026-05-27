@@ -1,0 +1,26 @@
+# AD-Sandbox Provisioner — manages sandbox Pods in Kubernetes
+#
+# Build:
+#   docker build -t ad-sandbox-provisioner:latest -f docker/Dockerfile.provisioner .
+#
+# Run:
+#   docker run -d -p 8002:8002 \
+#     -v ~/.kube/config:/root/.kube/config:ro \
+#     -e K8S_NAMESPACE=default \
+#     -e SANDBOX_IMAGE=agentry/runtime:latest \
+#     -e NODE_HOST=host.docker.internal \
+#     ad-sandbox-provisioner:latest
+
+FROM golang:1.22-alpine AS builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /sandbox-provisioner ./cmd/sandbox-provisioner
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /sandbox-provisioner /usr/local/bin/sandbox-provisioner
+
+EXPOSE 8002
+CMD ["sandbox-provisioner"]
