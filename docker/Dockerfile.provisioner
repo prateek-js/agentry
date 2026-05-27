@@ -45,6 +45,21 @@ FROM alpine:3.20
 # verify against public roots. Tini gives us proper SIGTERM forwarding.
 RUN apk add --no-cache ca-certificates tini
 
+# We deliberately do NOT add a `USER` directive — the provisioner runs
+# as root inside its container because it needs RW on /var/run/docker.sock,
+# which is typically root-owned (uid 0) or root-group-owned on the host.
+# Switching to a non-root user with a hard-coded gid would either
+# (a) fail when the host's docker.sock gid doesn't match (common; varies
+# by distro), or (b) require post-build chown of the socket, which is a
+# privileged operation.
+#
+# The provisioner's blast radius is the host's Docker daemon either way
+# — root-in-container = root-on-host for anything that can talk to
+# docker.sock. Defense-in-depth lives in the bridge mTLS gate + the
+# sandbox container hardening (cap-drop=ALL, no-new-privileges,
+# PidsLimit) — those are what stop a sandbox escape from reaching the
+# provisioner in the first place.
+
 COPY --from=builder /provisioner /usr/local/bin/agentry-provisioner
 
 # Persistent state lands here. Single Docker volume in the run command

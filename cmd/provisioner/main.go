@@ -56,13 +56,18 @@ func main() {
 func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 	switch cfg.Backend {
 	case provisioner.BackendDocker:
-		log.Printf("provisioner: backend=docker (image=%s host=%s shm=%dB)",
-			cfg.SandboxImage, cfg.NodeHost, cfg.DefaultShmBytes)
+		posture := "strict"
+		if cfg.BuilderMode {
+			posture = "builder (SYS_ADMIN, unconfined seccomp)"
+		}
+		log.Printf("provisioner: backend=docker (image=%s host=%s shm=%dB security=%s)",
+			cfg.SandboxImage, cfg.NodeHost, cfg.DefaultShmBytes, posture)
 		b, err := provisioner.NewDockerBackend(nil, cfg.SandboxImage, cfg.NodeHost)
 		if err != nil {
 			return nil, err
 		}
 		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
+		b.SetBuilderMode(cfg.BuilderMode)
 		return b, nil
 	case provisioner.BackendK8s, "":
 		log.Printf("provisioner: backend=k8s (kubeconfig=%s)", cfg.KubeconfigPath)

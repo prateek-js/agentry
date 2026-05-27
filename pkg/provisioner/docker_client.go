@@ -56,8 +56,26 @@ type DockerBackend struct {
 	// SANDBOX_DEFAULT_SHM_SIZE.
 	defaultShmBytes int64
 
+	// builderMode flips the security posture of created sandboxes from
+	// strict (cap-drop=ALL, no-new-privileges, default seccomp) to
+	// permissive (SYS_ADMIN, unconfined seccomp + apparmor, bigger
+	// ulimits). The permissive posture lets `build-image` / buildah
+	// run inside a sandbox; the strict default makes the sandbox
+	// substantially harder to escape from.
+	//
+	// Set via AGENTRY_SANDBOX_BUILDER_MODE=true. Operators choose at
+	// provisioner-start time — every sandbox the provisioner spawns
+	// inherits the same posture. Per-sandbox flips are post-v1.
+	builderMode bool
+
 	mu      sync.RWMutex
 	overlay map[string]map[string]string // sandboxID -> mutable annotation overlay
+}
+
+// SetBuilderMode flips the security-posture switch. See the field
+// docstring. Call once at startup before any sandbox is created.
+func (d *DockerBackend) SetBuilderMode(on bool) {
+	d.builderMode = on
 }
 
 // SetDefaultShmBytes overrides the per-container /dev/shm size. Call once at
@@ -137,19 +155,54 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 			containerHTTPPort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
 		},
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
-		// Allow `buildah` to do its user-namespace and overlay-fs work
-		// without privileged mode. Docker's default seccomp profile
-		// blocks `unshare(CLONE_NEWUSER)` and `mount`, which buildah
-		// needs during image builds — even with `--isolation=chroot`.
-		// `apparmor=unconfined` is a no-op on hosts without AppArmor.
-		// SYS_ADMIN + /dev/fuse cover the fuse-overlayfs storage driver
-		// we configure at image-build time.
-		SecurityOpt: []string{
+	}
+	// Apply security posture. Default = strict (drop all caps except the
+	// few we need for the runtime daemon, seccomp+apparmor default,
+	// no-new-privileges). Builder mode = permissive (SYS_ADMIN + seccomp
+	// unconfined) so in-sandbox `build-image` / buildah can do its
+	// user-namespace + overlay-fs work. Pick at provisioner start time
+	// via AGENTRY_SANDBOX_BUILDER_MODE; opt-out by default.
+	if d.builderMode {
+		hostCfg.SecurityOpt = []string{
 			"seccomp=unconfined",
 			"apparmor=unconfined",
-		},
-		CapAdd: []string{"SYS_ADMIN"},
+			"no-new-privileges:true",
+		}
+		hostCfg.CapAdd = []string{"SYS_ADMIN"}
+		// Buildah hard-codes RLIMIT_NPROC=RLIMIT_NOFILE=1048576 on the
+		// containers it creates for `RUN` steps and bails with "operation
+		// not permitted" if the outer process can't set those values.
+		hostCfg.Resources.Ulimits = append(hostCfg.Resources.Ulimits,
+			&container.Ulimit{Name: "nproc", Soft: 1048576, Hard: 1048576},
+			&container.Ulimit{Name: "nofile", Soft: 1048576, Hard: 1048576},
+		)
+		// /dev/fuse for fuse-overlayfs storage in buildah.
+		hostCfg.Resources.Devices = append(hostCfg.Resources.Devices,
+			container.DeviceMapping{
+				PathOnHost: "/dev/fuse", PathInContainer: "/dev/fuse",
+				CgroupPermissions: "rwm",
+			})
+	} else {
+		// Strict default. Drop every capability, then add back ONLY
+		// what the runtime daemon's known users need:
+		//   - nothing required for shell-exec, file-write, code-exec,
+		//     project-start. Modern Linux lets unprivileged processes
+		//     bind() to ports >1024 and read most of /proc/self.
+		// No SYS_ADMIN ⇒ buildah inside the sandbox won't work. That's
+		// why builder mode exists.
+		hostCfg.CapDrop = []string{"ALL"}
+		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
+		// Reasonable nofile / nproc — generous for the workloads we
+		// run (python+jupyter+npm) but bounded.
+		hostCfg.Resources.Ulimits = append(hostCfg.Resources.Ulimits,
+			&container.Ulimit{Name: "nproc", Soft: 65536, Hard: 65536},
+			&container.Ulimit{Name: "nofile", Soft: 65536, Hard: 65536},
+		)
 	}
+	// Fork-bomb defense — applies in both modes. 4k pids is plenty for
+	// a python/node/jupyter mix; well under Docker's 32k default.
+	pidLimit := int64(4096)
+	hostCfg.Resources.PidsLimit = &pidLimit
 	if err := applyDockerResources(hostCfg, spec.Resources); err != nil {
 		return fmt.Errorf("resources: %w", err)
 	}
@@ -161,23 +214,6 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 		// CreateRequest set it explicitly elsewhere.
 		hostCfg.ShmSize = d.defaultShmBytes
 	}
-	// Resources.Devices is the embedded field on HostConfig; set it
-	// after applyDockerResources so user-supplied resource overrides
-	// don't accidentally clear it.
-	hostCfg.Resources.Devices = append(hostCfg.Resources.Devices, container.DeviceMapping{
-		PathOnHost:        "/dev/fuse",
-		PathInContainer:   "/dev/fuse",
-		CgroupPermissions: "rwm",
-	})
-	// Buildah hard-codes RLIMIT_NPROC=RLIMIT_NOFILE=1048576 on the
-	// containers it creates for `RUN` steps and bails with "operation
-	// not permitted" if the outer process can't set those values.
-	// Lift our sandbox's ulimits to match so buildah-in-Docker just
-	// works without the LLM having to remember --ulimit flags.
-	hostCfg.Resources.Ulimits = append(hostCfg.Resources.Ulimits,
-		&container.Ulimit{Name: "nproc", Soft: 1048576, Hard: 1048576},
-		&container.Ulimit{Name: "nofile", Soft: 1048576, Hard: 1048576},
-	)
 	mounts, err := dockerMountsFromVolumes(spec.Volumes)
 	if err != nil {
 		return fmt.Errorf("volumes: %w", err)

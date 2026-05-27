@@ -86,6 +86,15 @@ type Config struct {
 	// Set via AGENTRY_ENROLL_TOKEN.
 	EnrollToken string
 
+	// BuilderMode flips the sandbox security posture from strict
+	// (default; cap-drop=ALL, no-new-privileges) to permissive
+	// (SYS_ADMIN, unconfined seccomp + apparmor) so in-sandbox
+	// `build-image` / buildah can do its user-namespace + overlay-fs
+	// work. Most operators should leave this off; opt in only when
+	// the LLM needs to build OCI images from inside the sandbox.
+	// Set via AGENTRY_SANDBOX_BUILDER_MODE.
+	BuilderMode bool
+
 	// DefaultShmBytes is the size of /dev/shm inside every sandbox.
 	// Docker's default is 64 MiB, which is the most common cause of
 	// "Bus error" / "No space left on device" failures in pandas,
@@ -126,6 +135,7 @@ func DefaultConfig() Config {
 		DefaultVolumes:  defaultVolumesFromEnv(),
 		DefaultEgress:   defaultEgressFromEnv(),
 		DefaultShmBytes: defaultShmBytesFromEnv(),
+		BuilderMode:     envBool("AGENTRY_SANDBOX_BUILDER_MODE"),
 		BridgeURL:       os.Getenv("AGENTRY_BRIDGE_URL"),
 		ClusterID:       os.Getenv("AGENTRY_CLUSTER_NAME"),
 		CertDir:         os.Getenv("AGENTRY_CERT_DIR"),
@@ -182,6 +192,16 @@ func defaultEgressFromEnv() EgressPolicy {
 		return EgressPolicy{}
 	}
 	return pol
+}
+
+// envBool returns true for common truthy values ("1", "true", "yes",
+// "on", case-insensitive). Any other value, including unset, is false.
+func envBool(key string) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // splitCSV splits "a,b, c" into ["a","b","c"], dropping empties and trimming
