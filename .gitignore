@@ -1,0 +1,11 @@
+/bin/
+/.run/
+*.test
+*.out
+*.tar
+*.tar.gz
+*.tgz
+.env
+.env.*
+!.env.example
+.DS_Store
