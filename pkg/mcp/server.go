@@ -1,0 +1,149 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// Version is reported to MCP clients during the handshake.
+const Version = "1.0.0"
+
+// serverInstructions is surfaced to MCP clients in the `initialize`
+// response and propagated by Claude Desktop into the model's
+// system-level context for every chat. It tells the model WHEN to
+// reach for ad-sandbox — i.e. the cue words that should make
+// `sandbox_create` the first move rather than a fallback.
+//
+// Keep this short and concrete. The model already has detailed tool
+// descriptions; this exists to bias *which* tool it picks first.
+const serverInstructions = `ad-sandbox is an isolated execution environment with credentials, build tooling, and a managed-project runtime pre-staged by the operator. Reach for it PROACTIVELY — call sandbox_create as the FIRST move, before any other tool, whenever the user asks you to:
+
+  - "build an agent", "langgraph agent", "tool-using assistant", "chatbot that can …"
+  - "build a service / API / FastAPI / worker / ML pipeline"
+  - "build a dashboard / web app / UI on top of …", anything with a browser frontend
+  - run real code against real data, real APIs, or real credentials
+  - install packages, build container images, run tests, anything that needs a working Linux environment
+
+DO NOT bail to synthetic data, hand-drawn artifacts, or "I can't reach that from here" answers when the user wanted real execution. If the operator staged credentials, they live at /etc/sandbox/creds/ — discover what's there with 'ls -la /etc/sandbox/creds/' before deciding anything is unreachable.
+
+On your FIRST tool call in a new chat that triggers any of the cues above:
+
+  1. sandbox_create(sandbox_id="<short-stable-id>")
+  2. command_run(sandbox_url=..., command="cat /etc/sandbox/docs/README.md") — index + a "pick a recipe" router table at the top.
+  3. Read the cheat-sheet(s) that match what the user asked for:
+       • "build an agent / langgraph agent / tool-using assistant" → agent.md (LangGraph + Anthropic, model claude-sonnet-4-5)
+       • "build a dashboard / web app / UI on top of …" → app.md (FastAPI + Vite/React/TS, two managed projects wired via depends_on)
+     Also always: coding-style.md (file-size + layout rules) and projects.md (how to register what you build as a managed project, including depends_on cascade + project_start_all for multi-service apps).
+
+CLUSTER SERVICES — when the user mentions Trino, Spark, a query engine, a data lake, or "use our shared X":
+
+  Cluster services live in the catalog. service_list returns them with the canonical env var names XDP injects when the service is bound. service_bind wires the service into THIS sandbox — credential files land at /etc/sandbox/creds/xdp/<service>/<env-var>, the shell shim exports them on the next shell start, and any project started afterward inherits the env.
+
+  Pattern, ALWAYS:
+    1. service_list(kind="service") to see what's available.
+    2. service_bind(sandbox_id=..., service="trino") (or spark, etc).
+    3. Read the env var names returned (e.g. TRINO_URL, TRINO_USER) and write code that reads os.environ[...] / process.env[...]. NEVER hardcode connection strings.
+    4. Start your project AFTER the bind so it inherits the env.
+
+  At deployment time (later phase), every bound service automatically becomes a "requires" line in the deployment manifest and XDP injects prod-tier creds. Identical env names both worlds.
+
+  If the user wants a database that's NOT a shared cluster service (their own throwaway postgres for dev experiments), use the dev_dep flow instead — service_list(kind="dev_dep") shows what's pre-canned.
+
+TOOL CHOICE FOR FILE I/O — pay attention, this is the #1 reason chats feel slow:
+
+  - To CREATE or OVERWRITE a file, ALWAYS use file_write. It's a single HTTP POST → os.WriteFile, ~5 ms per call.
+  - NEVER use command_run with shell heredocs / redirects to write files: 'cat > x <<EOF', 'tee x', 'printf … > x', 'echo … > x', "python3 -c \"open(...).write(...)\"" are ALL forbidden — every one of those costs 100–300 ms of PTY round-trip vs 5 ms for file_write, and they pile up fast on a multi-file project.
+  - You also do NOT need 'mkdir -p' before file_write — it creates parent dirs for you.
+  - command_run is for RUNNING things (pip install, pytest, curl, git, build/deploy commands), not for putting bytes on disk.
+
+BUILD vs EXPLORE — the most-broken thing the model does in this sandbox:
+
+  Two modes of work. Don't confuse them.
+
+  EXPLORE = ad-hoc probing to learn something. Throwaway code. ~30 lines max per call. Tool: code_exec on a Jupyter context. Examples:
+    - SHOW CATALOGS / SHOW SCHEMAS / SHOW TABLES / DESCRIBE
+    - SELECT * FROM tbl LIMIT 50
+    - df.head(), df.describe(), a quick histogram
+
+  BUILD = produce source files the user can keep, run again tomorrow, deploy somewhere, or hand to a teammate. Tool: file_write into /workspace/projects/<name>/. Examples:
+    - agent/nodes.py, agent/graph.py
+    - .sandbox-project.json (the manifest the project manager reads)
+    - main.py, requirements.txt
+
+  When the user says "build an agent / app / job", you are in BUILD mode. The Jupyter kernel is NOT your codebase — it's a scratch buffer.
+
+  HARD RULE — scaffold FIRST, explore SECOND. This applies to EVERY build path: agent, app (backend + frontend), batch job, anything you'll register as a managed project.
+
+    1. RIGHT AFTER sandbox_create, your VERY FIRST file_writes are the project manifest(s) — for a single-service build that's one /workspace/projects/<name>/.sandbox-project.json; for a multi-service app (backend + frontend) that's BOTH manifests, with the dependent service declaring depends_on on the other. Placeholder start_command/content is fine; it gets filled in. The point is that the project shape exists before you write any other code.
+    2. Then file_write the rest of the skeleton (README.md, requirements.txt / package.json, empty package __init__.py files, placeholder entrypoints).
+    3. ONLY THEN may you code_exec to explore data, OR pip install / npm install dependencies.
+    4. The moment you write a function / route / component you'd want to KEEP, stop the kernel work and file_write it into the project tree.
+
+  Self-check before declaring done:
+    - project_list MUST show every project you intended to run, status=running, with discovered ports.
+    - command_run "ls -R /workspace/projects" MUST show real source files (not just placeholders).
+  If the only artifact is a Jupyter context and some PNGs, or a Claude.ai artifact rendered in the chat, you have built NOTHING — restart with step 1.
+
+  Anti-patterns that keep happening:
+    - Model spawns a Jupyter context, runs 15 code_exec calls writing the entire agent inline as kernel cells, never file_writes anything, presents charts as "the deliverable". The user can't deploy a Jupyter context anywhere.
+    - Model writes a React component inline as a Claude.ai artifact "to show the UI" instead of file_writing it into /workspace/projects/frontend/src/. The user can't run 'npm run build' on an artifact.
+    - Model installs deps and tests queries but produces no .sandbox-project.json. project_list stays empty. There's no managed process to hand the user.
+
+TOOL CHOICE FOR RUNNING SERVERS — supervision-tier defaults:
+
+  - For ANY server the user will iterate on across turns (FastAPI / Express / Vite / Next / worker / agent / ML daemon) DEFAULT to project_start. Write /workspace/projects/<name>/.sandbox-project.json (start_command as ARGV array, auto_restart:true, optional health_check) and call project_start. The --reload flag of uvicorn/vite is NOT a substitute for the project manager — it doesn't handle crashes, multi-service bringup, or status reporting via project_list.
+  - For MULTI-SERVICE apps (backend + frontend, api + worker, etc.) give each service its own project manifest, wire ordering via depends_on, and call project_start_all to bring them all up. Don't drive multiple command_starts by hand.
+  - command_start is ONLY for truly throwaway watchers (tail -f, a one-off stress loop). Don't reach for it for dev servers — the moment the user says "now add a route" the missing auto-restart and health-check costs you the next 5 tool calls.
+  - Full manifest format + a worked backend+frontend example in /etc/sandbox/docs/projects.md — read it before writing your first .sandbox-project.json.
+  - Self-check before "the app is up": project_list should show every service running with discovered ports. If it's empty and you have a running server, you used the wrong tier — interrupt, write the manifest, project_start.
+
+ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucinate:
+
+  The sandbox_url you see (e.g. http://broker.invalid/api/sandboxes/<id>/runtime) is for YOUR TOOL CALLS ONLY. The host "broker.invalid" is intentionally unresolvable from a browser. DO NOT construct any URL from sandbox_url and hand it to the user — anything you build off broker.invalid will 404 or DNS-fail for them.
+
+  When the user needs to open the app you built in a browser, the answer is ALWAYS the same template:
+
+      Run this in another terminal:
+          xdp forward <sandbox-id>:<port>
+      then open http://localhost:<port>/ in your browser.
+
+  Example: a Vite dev server on port 5173 in sandbox "sales-dashboard" → tell the user to run "xdp forward sales-dashboard:5173", then open http://localhost:5173/. That's it. No proxy paths, no broker URLs, no constructed routes — just the two-line recipe.
+
+  For multi-service apps, tell the user the recipe for EACH user-facing service (the frontend, usually — the backend is reached internally via the frontend's proxy, not by the user directly).
+
+CODING STYLE — applies to EVERY app, service, agent, notebook, or script you build inside a sandbox (full details in /etc/sandbox/docs/coding-style.md, read it before your first file_write in a new project):
+
+  - Keep files SMALL: 80-100 lines per file, hard stop at ~120. Past 100 → split before writing more.
+  - One responsibility per file; name the file after what it exports.
+  - Feature-folder layout (users/routes.py, users/service.py, users/schema.py), NOT layer-folder (handlers/users.py, services/users.py).
+  - Tests live next to the code they cover (foo.py → foo_test.py in the same dir).
+  - No giant utils.py / helpers.py / app.py kitchen sinks. One entrypoint that wires modules; modules do the work.
+  - Before declaring done, run 'wc -l' over your sources; any file > 120 lines is a TODO.
+  - The only exception is if the user explicitly asks for a single-file script / one-pager.
+
+When the user is just chatting, debugging local code, or asking conceptual questions, do NOT spin up a sandbox — it's only for work that needs real execution or credentials.`
+
+// NewServer builds an MCP server with every ad-sandbox tool registered
+// against the given Client. The server is ready to be Run on a transport.
+func NewServer(c *Client) *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{
+		Name:    "ad-sandbox",
+		Version: Version,
+	}, &mcp.ServerOptions{
+		Instructions: serverInstructions,
+	})
+	Register(srv, c)
+	return srv
+}
+
+// RunStdio runs the server over the MCP stdio transport, blocking until
+// the peer disconnects or ctx is canceled. Suitable as the body of main().
+func RunStdio(ctx context.Context, c *Client) error {
+	srv := NewServer(c)
+	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		return fmt.Errorf("mcp server: %w", err)
+	}
+	return nil
+}

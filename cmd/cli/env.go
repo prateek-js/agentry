@@ -1,0 +1,248 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+
+	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/hashicorp/yamux"
+	"golang.org/x/term"
+)
+
+// cmdEnv dispatches the `xdp env *` subcommands. Set + unset stage
+// values into the sandbox via the provisioner; list reads them back.
+//
+// Why this lives on the CLI and not the MCP layer: the value entered
+// here goes through a hidden prompt (term.ReadPassword) — secrets
+// shouldn't enter chat context, and the MCP env_set tool actively
+// rejects secret-shaped values to enforce this.
+func cmdEnv(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "xdp env: need a subcommand (set|list|unset)")
+		return 2
+	}
+	switch args[0] {
+	case "set":
+		return envSet(args[1:])
+	case "list":
+		return envList(args[1:])
+	default:
+		return die("xdp env: unknown subcommand %q", args[0])
+	}
+}
+
+func envSet(args []string) int {
+	fs := flag.NewFlagSet("xdp env set", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (required)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) < 1 {
+		return die("xdp env set --sandbox <id> NAME [VALUE]\n(omit VALUE to be prompted with hidden input)")
+	}
+	if *sandbox == "" {
+		return die("--sandbox is required")
+	}
+	name := rest[0]
+	var value string
+	if len(rest) >= 2 {
+		// Value on the command line. Visible in shell history — only
+		// use for non-sensitive values. For secrets, omit and use the
+		// hidden prompt.
+		value = rest[1]
+	} else {
+		v, err := readHidden(fmt.Sprintf("Value for %s: ", name))
+		if err != nil {
+			return die("read value: %v", err)
+		}
+		value = v
+	}
+
+	return callProvisioner("POST", "/api/sandboxes/"+*sandbox+"/secrets",
+		map[string]string{"name": name, "value": value, "source": "cli"})
+}
+
+func envList(args []string) int {
+	fs := flag.NewFlagSet("xdp env list", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (required)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *sandbox == "" {
+		return die("--sandbox is required")
+	}
+
+	cfg, _, err := LoadConfig()
+	if err != nil {
+		return die("load config: %v", err)
+	}
+	sess, err := openTunnel(cfg)
+	if err != nil {
+		return die("dial broker: %v", err)
+	}
+	defer sess.Close()
+	rt := &clusterStampedRT{next: tunnel.NewRoundTripper(sess), cluster: cfg.Cluster}
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get("http://bridge.invalid/api/sandboxes/" + *sandbox + "/secrets")
+	if err != nil {
+		return die("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		return die("status=%d %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Names []string `json:"names"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return die("decode: %v", err)
+	}
+	if len(out.Names) == 0 {
+		fmt.Println("(no env vars staged in this sandbox)")
+		return 0
+	}
+	for _, n := range out.Names {
+		fmt.Println(n)
+	}
+	return 0
+}
+
+// readHidden prompts the user with label and reads a line of input
+// without echoing keystrokes. Used for secrets that should never
+// appear in shell history or anyone's screen.
+func readHidden(label string) (string, error) {
+	fmt.Fprint(os.Stderr, label)
+	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr) // newline after the hidden read
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// callProvisioner is the shared "build a tunneled HTTP request, send,
+// pretty-print the response" helper for xdp subcommands that
+// proxy to the provisioner. body may be nil for verbs without one.
+func callProvisioner(method, path string, body any) int {
+	cfg, _, err := LoadConfig()
+	if err != nil {
+		return die("load config: %v", err)
+	}
+	sess, err := openTunnel(cfg)
+	if err != nil {
+		return die("dial broker: %v", err)
+	}
+	defer sess.Close()
+	rt := &clusterStampedRT{next: tunnel.NewRoundTripper(sess), cluster: cfg.Cluster}
+	client := &http.Client{Transport: rt}
+
+	var rdr io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return die("marshal: %v", err)
+		}
+		rdr = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, "http://bridge.invalid"+path, rdr)
+	if err != nil {
+		return die("build request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return die("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return die("status=%d %s", resp.StatusCode, raw)
+	}
+	if len(raw) > 0 {
+		// Pretty-print JSON; pass through anything else.
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, raw, "", "  ") == nil {
+			fmt.Println(pretty.String())
+		} else {
+			fmt.Println(string(raw))
+		}
+	} else {
+		fmt.Println("ok")
+	}
+	return 0
+}
+
+// openTunnel encapsulates the dial-broker boilerplate that several
+// xdp subcommands need. Returns the yamux session for the caller to
+// build a RoundTripper on.
+//
+// When the config carries a device cert + key (prod mode), we present
+// them via TLS for the duration of the session. The broker pins them
+// to its KMS-signed CA pool on the listener; if the cert is missing,
+// expired, or unknown to the broker, the dial fails at TLS time.
+func openTunnel(cfg *Config) (*yamux.Session, error) {
+	if cfg.BrokerURL == "" {
+		return nil, fmt.Errorf("config has no broker_url; run `xdp init`")
+	}
+	if cfg.Cluster == "" {
+		return nil, fmt.Errorf("no cluster set; run `xdp cluster use <name>`")
+	}
+	dial := tunnel.DialConfig{
+		BrokerURL: cfg.BrokerURL,
+		Role:      tunnel.RoleDevice,
+		Headers:   http.Header{tunnel.HeaderDeviceID: []string{cfg.DeviceID}},
+	}
+	if cfg.DeviceCertPath != "" && cfg.DeviceKeyPath != "" {
+		tlsConf, err := buildClientTLS(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("build client TLS: %w", err)
+		}
+		dial.TLSConfig = tlsConf
+	}
+	return tunnel.Dial(context.Background(), dial)
+}
+
+// buildClientTLS loads the persisted device cert + key + CA cert into
+// a tls.Config the broker will accept. ServerName is omitted; tls.Dial
+// derives it from the hostname so SNI works correctly behind the
+// broker's autocert.
+func buildClientTLS(cfg *Config) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.DeviceCertPath, cfg.DeviceKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load device cert/key: %w", err)
+	}
+	caPEM, err := os.ReadFile(cfg.CACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read CA cert: %w", err)
+	}
+	// Start from the system roots so the broker's LetsEncrypt server
+	// cert verifies. Then add our KMS-signed CA — harmless extra trust
+	// anchor that future-proofs us against a broker switching to a
+	// self-signed server cert.
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("%s: no PEM certificates found", cfg.CACertPath)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
