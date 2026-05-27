@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# ad-sandbox runtime image.
+# agentry runtime image — what every sandbox container runs.
 #
 # Design notes:
 #   - Multi-stage: builder compiles a fully-static Go binary; runtime
@@ -17,7 +17,7 @@
 #     need with no config file overhead.
 #
 # Build:
-#   docker build -t agentry/runtime:latest -f docker/Dockerfile .
+#   docker build -t ghcr.io/agentry/runtime:latest -f docker/Dockerfile.runtime .
 #
 # Run:
 #   docker run -d -p 8080:8080 agentry/runtime:latest
@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" \
-        -o /out/sandbox-runtime ./cmd/sandbox-runtime
+        -o /out/agentry-runtime ./cmd/runtime
 
 # ─── Stage 2: Runtime image ──────────────────────────────────────────────────
 FROM python:3.13-slim AS runtime
@@ -156,7 +156,7 @@ RUN mkdir -p /etc/containers && \
         > /etc/containers/containers.conf
 
 # Runtime binary, security hardening, and credential plumbing.
-COPY --from=builder /out/sandbox-runtime /usr/local/bin/sandbox-runtime
+COPY --from=builder /out/agentry-runtime /usr/local/bin/agentry-runtime
 COPY docker/lockdown.sh /opt/sandbox/lockdown.sh
 COPY docker/build-image /usr/local/bin/build-image
 COPY docker/sandbox-init.sh /usr/local/bin/sandbox-init
@@ -172,6 +172,11 @@ RUN chmod +x /opt/sandbox/lockdown.sh /usr/local/bin/build-image \
               /usr/local/bin/sandbox-init && \
     chmod 0644 /etc/profile.d/sandbox-creds.sh && \
     /opt/sandbox/lockdown.sh
+
+# sandbox-init.sh runs agentry-runtime via the legacy "sandbox-runtime"
+# name. Compatibility symlink so we can rename the binary without
+# touching the init script.
+RUN ln -s /usr/local/bin/agentry-runtime /usr/local/bin/sandbox-runtime
 
 # Workspace directories. 1777 = world writable + sticky bit so files
 # survive uid switches but can't be deleted by other tenants if we
