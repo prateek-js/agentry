@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/agentry/agentry/pkg/models"
@@ -36,6 +37,19 @@ func ShellHandler(mgr *shell.Manager) http.HandlerFunc {
 		}
 
 		output, exitCode, status := mgr.Execute(sessionID, req.Command, execDir, timeout)
+
+		// On hard_timeout, prepend an actionable hint so the LLM caller
+		// retries with a bigger budget instead of misreading the partial
+		// output as a transport failure ("tunnel down", "sandbox lost").
+		// The hint costs ~120 bytes; without it Roo/Claude routinely
+		// bails on pip-install class commands and writes files locally.
+		if status == "hard_timeout" {
+			hint := fmt.Sprintf(
+				"[command_run: timed out after %.0fs — the tunnel and sandbox are fine, only this call's budget expired. Retry the same command with a higher `timeout` (300+ for pip/npm install, 900 for docker build). Partial stdout below.]\n",
+				timeout,
+			)
+			output = hint + output
+		}
 
 		Success(w, "command executed", models.ShellExecData{
 			SessionID: sessionID,

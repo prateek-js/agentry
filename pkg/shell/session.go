@@ -21,8 +21,14 @@ import (
 )
 
 const (
-	// DefaultTimeout is the default command execution timeout in seconds.
-	DefaultTimeout = 30.0
+	// DefaultTimeout is the fallback command execution timeout in seconds
+	// when the caller doesn't pass an explicit value. Sized for "the
+	// model forgot to set a timeout on a pip install" — long enough that
+	// medium installs finish, short enough that a genuinely-hung command
+	// returns control inside one MCP call. The MCP tool schema teaches
+	// the model to set a per-command timeout (300+ for installs, 60 for
+	// quick checks); this default just keeps the failure mode benign.
+	DefaultTimeout = 120.0
 
 	// SessionIdleExpiry is how long a session can be idle before cleanup.
 	SessionIdleExpiry = 30 * time.Minute

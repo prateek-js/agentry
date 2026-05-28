@@ -100,7 +100,8 @@ func Register(server *mcp.Server, c *Client) {
 		Name: "command_run",
 		Description: "Run a BLOCKING shell command and wait for stdout/exit_code. Reuse `session_id` across calls for a persistent bash PTY (keeps cwd/env). " +
 			"USE FOR: pip/npm installs, pytest, curl, git, build/deploy commands. " +
-			"DO NOT USE FOR: writing files (use `file_write` — 5 ms vs 100-300 ms per heredoc) or long-running servers (use `command_start` or `project_start`).",
+			"DO NOT USE FOR: writing files (use `file_write` — 5 ms vs 100-300 ms per heredoc) or long-running servers (use `command_start` or `project_start`). " +
+			"TIMEOUT: pick `timeout` deliberately — full rubric on the schema, but the headline is 300+ for pip/npm install, 900 for docker build. A `hard_timeout` status is NOT a tunnel failure; retry with a higher timeout before giving up.",
 	}, commandRun(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "command_start",
@@ -241,7 +242,7 @@ type commandRunArgs struct {
 	Command    string  `json:"command" jsonschema:"the shell command to execute"`
 	SessionID  string  `json:"session_id,omitempty" jsonschema:"persistent bash PTY id; same id keeps cwd & env"`
 	ExecDir    string  `json:"exec_dir,omitempty" jsonschema:"working directory for the command"`
-	Timeout    float64 `json:"timeout,omitempty" jsonschema:"per-call timeout in seconds (default 30)"`
+	Timeout    float64 `json:"timeout,omitempty" jsonschema:"per-call timeout in seconds. Default 120 covers most work; pick deliberately for known-slow commands. Rubric — quick checks (ls, cat, ps, git status, curl with --max-time): 30. Tests / one-off builds (pytest, go build, cargo build small): 120 (default). Package installs (pip install -r, npm install, apt-get install): 300; bump to 600 for heavy ML / langchain / full node_modules trees. Container builds (docker build, buildah): 900. Multi-minute data jobs / migrations: set explicitly to your best estimate × 1.5. NEVER bail on a hard_timeout status without first retrying with a higher value — the tunnel is fine; only the per-call budget expired."`
 }
 
 type commandStartArgs struct {
