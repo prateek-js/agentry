@@ -276,6 +276,13 @@ func (p *Provisioner) Run() error {
 		if bridgeURL == "" {
 			log.Fatalf("provisioner: cannot determine bridge URL — set AGENTRY_BRIDGE_URL or ensure the enroll response carried bridge_url")
 		}
+		// sandboxURL() reads p.config.BridgeURL to decide whether
+		// sandbox_url should be the tunneled bridge.invalid path or
+		// a direct host:port. On the cert-reuse path bridgeURL came
+		// from bundle.BridgeURL, not from env, so p.config.BridgeURL
+		// would otherwise stay empty and sandbox_url would fall back
+		// to direct — unreachable from the device.
+		p.config.BridgeURL = bridgeURL
 		bc := NewBrokerClient(bridgeURL, p.config.ClusterID, p.Handler(), tlsConf)
 		go func() {
 			if err := bc.Run(bgCtx); err != nil && err != context.Canceled {

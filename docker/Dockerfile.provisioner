@@ -9,12 +9,24 @@
 #
 # Run (the one-liner the dashboard hands to the user):
 #   docker run -d --name agentry-provisioner --restart=unless-stopped \
+#       --network=host \
 #       -v /var/run/docker.sock:/var/run/docker.sock \
 #       -v agentry-data:/var/lib/agentry-provisioner \
 #       -e AGENTRY_ENROLL_TOKEN=tok_... \
 #       -e AGENTRY_CLUSTER_NAME=my-laptop \
 #       -e AGENTRY_ENROLL_URL=https://app.agentry.run/api/v1/enroll \
 #       ghcr.io/agentry/sandbox-provisioner:latest
+#
+# Why --network=host: the provisioner has to dial the sandbox runtime
+# containers on the host's loopback (the same loopback Docker binds the
+# published ports to). Without host networking the provisioner's
+# loopback is its own — unreachable from the host's published ports.
+# `host.docker.internal` only reaches *bridge-bound* host ports, so if
+# the operator has tightened `daemon.json` to bind ports to 127.0.0.1
+# (so sandbox runtimes aren't world-reachable), the provisioner inside
+# its own netns can't see them at all. Host networking sidesteps both
+# concerns at the cost of putting `PROVISIONER_ADDR=:8002` on the
+# host — guard that with a host firewall (ufw) in any case.
 #
 # What the image does at startup:
 #
@@ -68,7 +80,11 @@ COPY --from=builder /provisioner /usr/local/bin/agentry-provisioner
 ENV AGENTRY_CERT_DIR=/var/lib/agentry-provisioner
 ENV PROVISIONER_ADDR=:8002
 ENV BACKEND=docker
-ENV NODE_HOST=host.docker.internal
+# NODE_HOST is intentionally NOT set here — pkg/provisioner/config.go
+# defaults it to "localhost" for the docker backend, which is the right
+# answer for the --network=host deploy posture this image expects.
+# Overriding here would override that default even when a fresh deploy
+# can't possibly know better.
 ENV SANDBOX_IMAGE=ghcr.io/agentry/runtime:latest
 
 EXPOSE 8002
