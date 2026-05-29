@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/agentry/agentry/pkg/bridge"
 	"github.com/agentry/agentry/pkg/mcp"
@@ -110,7 +111,6 @@ func cmdStdio(_ []string) int {
 	}
 
 	ctx, cancel := signalContext()
-	defer cancel()
 
 	log.Printf("xdp: dialing broker %s as device=%s, cluster=%s",
 		cfg.BrokerURL, cfg.DeviceID, cfg.Cluster)
@@ -130,15 +130,39 @@ func cmdStdio(_ []string) int {
 	if err != nil {
 		return die("dial broker: %v", err)
 	}
-	defer sess.Close()
 
 	// http.Client whose transport is the tunnel RoundTripper plus a
 	// per-request stamp of X-Cluster. The MCP client doesn't know
 	// the bytes are tunneled — it just sees a working http.Client.
+	inner := tunnel.NewRoundTripper(sess)
 	rt := &clusterStampedRT{
-		next:    tunnel.NewRoundTripper(sess),
+		next:    inner,
 		cluster: cfg.Cluster,
 	}
+
+	// Reconnect loop. yamux sessions die from idle timeouts, network
+	// blips, autocert renewals on the bridge, anything that closes the
+	// underlying TCP. Without this loop the MCP server stays alive but
+	// every tool call returns "tunnel: session closed: no live session"
+	// and the LLM caller (Roo / Claude Desktop) concludes the tunnel
+	// is "down" and bails — even though the MCP subprocess itself is
+	// trivially recoverable by redialing.
+	//
+	// On session close: log, exponential backoff, redial, SetSession.
+	// In-flight requests keep using the dying session (RoundTripper's
+	// atomic pointer is read-once per request); new requests after the
+	// swap pick up the fresh one.
+	go reconnectLoop(ctx, sess, inner, dial)
+	defer func() {
+		// Order matters: cancel ctx first so the reconnect goroutine
+		// returns through its `<-ctx.Done()` branch and doesn't log
+		// "session closed; reconnecting" on graceful shutdown. THEN
+		// close whatever session is currently held.
+		cancel()
+		if s := inner.Session(); s != nil {
+			_ = s.Close()
+		}
+	}()
 	tunneledHTTP := &http.Client{Transport: rt}
 	mcpClient := mcp.NewClient(mcp.Config{
 		// ProvisionerURL has to be non-empty for the MCP client to
@@ -218,4 +242,57 @@ func (r *clusterStampedRT) RoundTrip(req *http.Request) (*http.Response, error) 
 	req = req.Clone(req.Context())
 	req.Header.Set(bridge.HeaderTargetCluster, r.cluster)
 	return r.next.RoundTrip(req)
+}
+
+// reconnectLoop watches the current tunnel session; whenever it
+// closes (idle timeout, network blip, autocert renewal on the bridge,
+// anything) we redial with exponential backoff and atomically swap the
+// fresh session into the RoundTripper. The MCP server keeps running
+// across the gap; the next tool call after a successful reconnect
+// sees a healthy session instead of "no live session".
+//
+// Returns when ctx is cancelled (Ctrl+C or signalContext fire).
+func reconnectLoop(ctx context.Context, initial tunnelSession, rt *tunnel.RoundTripper, dial tunnel.DialConfig) {
+	current := initial
+	for {
+		// Wait for the current session to die or ctx to cancel.
+		select {
+		case <-ctx.Done():
+			return
+		case <-current.CloseChan():
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("xdp: tunnel session closed; reconnecting")
+
+		backoff := tunnel.NewBackoff(tunnel.DialerBackoff())
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			sess, err := tunnel.Dial(ctx, dial)
+			if err == nil {
+				log.Printf("xdp: tunnel reconnected")
+				rt.SetSession(sess)
+				current = sess
+				break
+			}
+			delay := backoff.Next()
+			log.Printf("xdp: reconnect attempt %d failed: %v (retry in %s)",
+				backoff.Attempts(), err, delay)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+	}
+}
+
+// tunnelSession is the subset of *yamux.Session reconnectLoop needs.
+// Kept as a tiny interface so the loop is testable without standing up
+// a real yamux session.
+type tunnelSession interface {
+	CloseChan() <-chan struct{}
 }
