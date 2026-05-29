@@ -4,7 +4,7 @@
 #
 # Build:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#       -t ghcr.io/agentry/sandbox-provisioner:latest \
+#       -t ghcr.io/agentry-ai/sandbox-provisioner:latest \
 #       -f docker/Dockerfile.provisioner .
 #
 # Run (the one-liner the dashboard hands to the user):
@@ -15,7 +15,7 @@
 #       -e AGENTRY_ENROLL_TOKEN=tok_... \
 #       -e AGENTRY_CLUSTER_NAME=my-laptop \
 #       -e AGENTRY_ENROLL_URL=https://app.agentry.run/api/v1/enroll \
-#       ghcr.io/agentry/sandbox-provisioner:latest
+#       ghcr.io/agentry-ai/sandbox-provisioner:latest
 #
 # Why --network=host: the provisioner has to dial the sandbox runtime
 # containers on the host's loopback (the same loopback Docker binds the
@@ -85,7 +85,7 @@ ENV BACKEND=docker
 # answer for the --network=host deploy posture this image expects.
 # Overriding here would override that default even when a fresh deploy
 # can't possibly know better.
-ENV SANDBOX_IMAGE=ghcr.io/agentry/runtime:latest
+ENV SANDBOX_IMAGE=ghcr.io/agentry-ai/runtime:latest
 
 EXPOSE 8002
 

@@ -17,7 +17,7 @@
 #     need with no config file overhead.
 #
 # Build:
-#   docker build -t ghcr.io/agentry/runtime:latest -f docker/Dockerfile.runtime .
+#   docker build -t ghcr.io/agentry-ai/runtime:latest -f docker/Dockerfile.runtime .
 #
 # Run:
 #   docker run -d -p 8080:8080 agentry/runtime:latest
