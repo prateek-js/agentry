@@ -101,6 +101,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("GET /api/clusters", b.handleClustersList)
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
 	mux.HandleFunc("DELETE /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxDelete)
+	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/runtime/{rest...}", b.handleClusterSandboxRuntime)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -185,6 +186,28 @@ func (b *Broker) handleClusterSandboxes(w http.ResponseWriter, r *http.Request) 
 	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes")
 }
 
+// handleClusterSandboxRuntime is the generic wildcard proxy for any
+// HTTP call the dashboard wants to make against a running sandbox's
+// runtime container (process list, port list, project status, file
+// tree, …). Path shape:
+//
+//	/api/clusters/{id}/sandboxes/{sid}/runtime/{rest...}
+//
+// gets rewritten to the cluster-side path the provisioner already
+// terminates:
+//
+//	/api/sandboxes/{sid}/runtime/{rest}
+//
+// from there the provisioner's existing runtime_proxy hops one more
+// level inside the sandbox network. Same mTLS gate + same tunnel as
+// the list/delete endpoints; method, body, query string flow through.
+func (b *Broker) handleClusterSandboxRuntime(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	rest := r.PathValue("rest")
+	b.proxyToCluster(w, r, id, "/api/sandboxes/"+sid+"/runtime/"+rest)
+}
+
 // handleClusterSandboxDelete proxies a DELETE /api/sandboxes/{sid} to
 // the cluster's provisioner. Same gate + same tunnel as the list
 // endpoint; the only thing that varies is the upstream path.
@@ -204,12 +227,16 @@ func (b *Broker) proxyToCluster(w http.ResponseWriter, r *http.Request, id, upst
 		http.Error(w, fmt.Sprintf("cluster %q is offline", id), http.StatusBadGateway)
 		return
 	}
+	originalQuery := r.URL.RawQuery
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
 			req.URL.Host = "cluster-" + id
 			req.URL.Path = upstreamPath
-			req.URL.RawQuery = ""
+			// Preserve query string — runtime endpoints (and any future
+			// admin route with filters) need it. Bridge-internal list /
+			// delete calls don't pass one, so this is a no-op for them.
+			req.URL.RawQuery = originalQuery
 		},
 		Transport: cluster.rt,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
