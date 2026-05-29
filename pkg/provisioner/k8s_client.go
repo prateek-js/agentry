@@ -219,7 +219,7 @@ func (c *RealK8sClient) GetNodePort(ctx context.Context, namespace, name string)
 }
 
 func (c *RealK8sClient) ListSandboxes(ctx context.Context, namespace string, labels map[string]string) ([]SandboxInfo, error) {
-	selector := "app=ad-sandbox"
+	selector := "app=agentry-sandbox"
 
 	// Two parallel-ish LISTs (one round-trip each) avoid the previous
 	// O(N) get-per-pod fan-out we'd need to read annotations & phase.

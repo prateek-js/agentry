@@ -99,6 +99,7 @@ func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /tunnel", b.handleTunnel)
 	mux.HandleFunc("GET /api/clusters", b.handleClustersList)
+	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -165,6 +166,46 @@ func (b *Broker) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown or missing "+tunnel.HandshakeHeader, http.StatusBadRequest)
 	}
+}
+
+// handleClusterSandboxes proxies a GET /api/sandboxes request to the
+// named cluster's provisioner through its open tunnel session. Used by
+// the control plane's dashboard to render "what's running in this
+// cluster" without standing up a separate device-style tunnel from the
+// control plane.
+//
+// Same mTLS gate as /api/clusters — the cmd/bridge wrapper enforces a
+// valid client cert before the request reaches this handler in prod.
+//
+// If the cluster isn't currently connected, returns 502 with a clear
+// message (the dashboard renders this as "cluster offline" instead of
+// a generic error).
+func (b *Broker) handleClusterSandboxes(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b.mu.RLock()
+	cluster := b.clusters[id]
+	b.mu.RUnlock()
+	if cluster == nil {
+		http.Error(w, fmt.Sprintf("cluster %q is offline", id), http.StatusBadGateway)
+		return
+	}
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = "cluster-" + id
+			req.URL.Path = "/api/sandboxes"
+			req.URL.RawQuery = ""
+		},
+		Transport: cluster.rt,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if errors.Is(err, tunnel.ErrSessionClosed) {
+				http.Error(w, "cluster session closed mid-request", http.StatusBadGateway)
+				return
+			}
+			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+		},
+	}
+	proxy.ServeHTTP(w, r)
 }
 
 // handleClustersList returns the current connected-cluster census.

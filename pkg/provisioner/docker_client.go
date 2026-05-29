@@ -135,7 +135,7 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 	}
 
 	labels := map[string]string{
-		"app":        "ad-sandbox",
+		"app":        "agentry-sandbox",
 		"sandbox-id": spec.SandboxID,
 	}
 	for k, v := range spec.Labels {
@@ -400,7 +400,7 @@ func (d *DockerBackend) GetNodePort(ctx context.Context, _ string, name string) 
 
 func (d *DockerBackend) ListSandboxes(ctx context.Context, _ string, _ map[string]string) ([]SandboxInfo, error) {
 	f := filters.NewArgs()
-	f.Add("label", "app=ad-sandbox")
+	f.Add("label", "app=agentry-sandbox")
 	containers, err := d.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
 	if err != nil {
 		return nil, fmt.Errorf("container list: %w", err)
