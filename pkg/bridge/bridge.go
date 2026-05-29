@@ -100,6 +100,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("PUT /tunnel", b.handleTunnel)
 	mux.HandleFunc("GET /api/clusters", b.handleClustersList)
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
+	mux.HandleFunc("DELETE /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxDelete)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -181,7 +182,21 @@ func (b *Broker) handleTunnel(w http.ResponseWriter, r *http.Request) {
 // message (the dashboard renders this as "cluster offline" instead of
 // a generic error).
 func (b *Broker) handleClusterSandboxes(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes")
+}
+
+// handleClusterSandboxDelete proxies a DELETE /api/sandboxes/{sid} to
+// the cluster's provisioner. Same gate + same tunnel as the list
+// endpoint; the only thing that varies is the upstream path.
+func (b *Broker) handleClusterSandboxDelete(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes/"+r.PathValue("sid"))
+}
+
+// proxyToCluster is the shared reverse-proxy plumbing for any admin
+// endpoint that pivots a single HTTP request through a connected
+// cluster's tunnel. Method + body + headers all flow verbatim; only
+// the URL path is rewritten to the cluster's API shape.
+func (b *Broker) proxyToCluster(w http.ResponseWriter, r *http.Request, id, upstreamPath string) {
 	b.mu.RLock()
 	cluster := b.clusters[id]
 	b.mu.RUnlock()
@@ -193,7 +208,7 @@ func (b *Broker) handleClusterSandboxes(w http.ResponseWriter, r *http.Request) 
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
 			req.URL.Host = "cluster-" + id
-			req.URL.Path = "/api/sandboxes"
+			req.URL.Path = upstreamPath
 			req.URL.RawQuery = ""
 		},
 		Transport: cluster.rt,
