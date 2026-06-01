@@ -12,18 +12,35 @@ import (
 	"github.com/agentry/agentry/pkg/tunnel"
 )
 
-// DeployRoute is one hostname → sandbox mapping. The bridge keeps a
+// DeployRoute is one hostname → target mapping. The bridge keeps a
 // map of these in memory, populated by the control plane via the
 // admin API. When a browser request arrives at <hostname>, the bridge
-// looks up the target and reverse-proxies through the cluster tunnel
-// to the sandbox container's user-app port.
+// looks up the target and reverse-proxies through the cluster tunnel.
+//
+// Kind picks how the upstream URL is built:
+//
+//   "share"      → sandbox port. Goes through the runtime app_proxy
+//                  (/api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>).
+//                  Live dev process; sandbox-bound.
+//   "deployment" → deployment container. Goes through the deployment
+//                  proxy (/api/deployments/<dep_id>/proxy/<rest>).
+//                  Prod image; survives sandbox deletion.
+//
+// SandboxID + Port populate when Kind=share. DeploymentID populates
+// when Kind=deployment. ClusterID + OrgID + AuthMode apply to both.
 type DeployRoute struct {
-	Hostname    string `json:"hostname"`     // e.g. "sales-dash-abc.agentry.live"
-	ClusterID   string `json:"cluster_id"`   // matches the cluster-id used at handshake (== cluster name)
-	SandboxID   string `json:"sandbox_id"`   // sandbox in that cluster
-	Port        int    `json:"port"`         // the port the user's app listens on inside the sandbox
-	OrgID       string `json:"org_id"`       // for the future Clerk org-membership check
-	AuthMode    string `json:"auth_mode"`    // "org" | "public" — when org, bridge will require an authenticated org member
+	Hostname  string `json:"hostname"`           // e.g. "sales-dash-abc.agentry.live"
+	Kind      string `json:"kind"`               // "share" | "deployment" (default: "share" for legacy rows)
+	ClusterID string `json:"cluster_id"`         // matches the cluster-id used at handshake (== cluster name)
+	OrgID     string `json:"org_id"`             // Clerk org gate
+	AuthMode  string `json:"auth_mode"`          // "org" | "public"
+
+	// Kind=share fields.
+	SandboxID string `json:"sandbox_id,omitempty"`
+	Port      int    `json:"port,omitempty"` // the port the user's app listens on inside the sandbox
+
+	// Kind=deployment fields.
+	DeploymentID string `json:"deployment_id,omitempty"`
 }
 
 // DeployRegistry is the in-memory hostname → route map. Mutated by
@@ -124,10 +141,28 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the upstream path: /api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>
+	// Build the upstream path based on Kind:
+	//   share      → /api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>
+	//   deployment → /api/deployments/<dep_id>/proxy/<rest>
+	// Legacy rows (no Kind set) default to share for back-compat with
+	// any old in-memory state that pre-dates the field.
 	rest := r.URL.Path
-	upstreamPath := fmt.Sprintf("/api/sandboxes/%s/runtime/v1/proxy/%d%s",
-		route.SandboxID, route.Port, rest)
+	var upstreamPath string
+	switch route.Kind {
+	case "deployment":
+		if route.DeploymentID == "" {
+			http.Error(w, "deployment route missing deployment_id", http.StatusInternalServerError)
+			return
+		}
+		upstreamPath = fmt.Sprintf("/api/deployments/%s/proxy%s", route.DeploymentID, rest)
+	default: // "share" or empty
+		if route.SandboxID == "" || route.Port == 0 {
+			http.Error(w, "share route missing sandbox_id/port", http.StatusInternalServerError)
+			return
+		}
+		upstreamPath = fmt.Sprintf("/api/sandboxes/%s/runtime/v1/proxy/%d%s",
+			route.SandboxID, route.Port, rest)
+	}
 
 	originalQuery := r.URL.RawQuery
 	proxy := &httputil.ReverseProxy{
