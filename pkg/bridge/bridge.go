@@ -107,6 +107,13 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
 	mux.HandleFunc("DELETE /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxDelete)
 	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/runtime/{rest...}", b.handleClusterSandboxRuntime)
+	// Generic deploy-build + deployment lifecycle proxy. Same shape as
+	// the runtime wildcard above, but the cluster-side path lives under
+	// /api/deployments (deploy run/get/stop) and /api/sandboxes/{sid}/
+	// deploy-build. Used by the deployment orchestrator on agentry-app.
+	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/deploy-build", b.handleClusterDeployBuild)
+	mux.HandleFunc("/api/clusters/{id}/deployments", b.handleClusterDeploymentsRoot)
+	mux.HandleFunc("/api/clusters/{id}/deployments/{rest...}", b.handleClusterDeployments)
 	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
 	mux.HandleFunc("PUT /api/deploy-routes", b.handleDeployRoutesPut)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -220,6 +227,31 @@ func (b *Broker) handleClusterSandboxRuntime(w http.ResponseWriter, r *http.Requ
 // endpoint; the only thing that varies is the upstream path.
 func (b *Broker) handleClusterSandboxDelete(w http.ResponseWriter, r *http.Request) {
 	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes/"+r.PathValue("sid"))
+}
+
+// handleClusterDeployBuild proxies the deploy-build call into the
+// sandbox's provisioner. Used by the deployment orchestrator to kick
+// off image build inside the source sandbox.
+func (b *Broker) handleClusterDeployBuild(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/deploy-build")
+}
+
+// handleClusterDeployments{,Root} proxy deployment lifecycle calls
+// (run / get / stop) to the cluster's provisioner. Split into two
+// handlers because Go's path patterns can't distinguish ".../deployments"
+// from ".../deployments/{rest...}" on POST in one pattern.
+func (b *Broker) handleClusterDeploymentsRoot(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/deployments")
+}
+
+func (b *Broker) handleClusterDeployments(w http.ResponseWriter, r *http.Request) {
+	rest := r.PathValue("rest")
+	if rest == "" {
+		b.proxyToCluster(w, r, r.PathValue("id"), "/api/deployments")
+		return
+	}
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/deployments/"+rest)
 }
 
 // proxyToCluster is the shared reverse-proxy plumbing for any admin
