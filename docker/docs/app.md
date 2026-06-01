@@ -1,389 +1,266 @@
-# Recipe — scaffold a backend + frontend app
+# Recipe — scaffold a Next.js app (single-process, one URL)
 
 Use this when the user asks for "a dashboard", "a web app", "an
 internal tool", "a UI on top of …", or any variant involving a browser
-UI backed by an API. Defaults: **FastAPI** backend + **Vite + React +
-TypeScript** frontend. Don't reach for Next.js, Django, or
-create-react-app unless the user explicitly asks — they bring
-machinery you don't need for a sandbox demo.
+UI backed by an API. The default stack is **Next.js (App Router, TS)**
+with the API + UI in the SAME project — one process, one port, one
+deploy.
+
+Don't split frontend from backend. Don't reach for FastAPI + Vite, two
+projects, Procfiles, or Docker Compose. agentry apps ship as a single
+image with a single URL. If you find yourself making `projects/backend`
+and `projects/frontend`, stop — you're on the wrong path.
 
 ## ⚠️ READ THIS FIRST — scaffold BEFORE you explore
 
 The #1 way this recipe goes wrong is: the model spawns a Jupyter
-kernel to "look at the data first", writes all the analytics inline,
-maybe drafts a single React component as a one-off, and never produces
-two managed projects. At the end there's no `/workspace/projects/backend/`,
-no `/workspace/projects/frontend/`, no `.sandbox-project.json` —
-just a Jupyter context and some PNG charts. The user can't open it
-in a browser, run it on Monday, or deploy it.
+kernel to "look at the data first", writes analysis inline, drafts a
+React component as a one-off, and never produces a managed Next.js
+project. At the end there's no `/workspace/projects/app/`, no
+`.sandbox-project.json` — just a kernel and some PNG charts. The user
+can't open it in a browser, ship it, or deploy it.
 
 DO NOT DO THAT. Rules:
 
-1. The **FIRST `file_write` in this task** is the project skeleton —
-   both project manifests. Concretely, before any `code_exec`, before
-   any `pip install`, before any `npm install`, you write:
-     - `/workspace/projects/backend/.sandbox-project.json`
-     - `/workspace/projects/backend/app/__init__.py` (empty)
-     - `/workspace/projects/backend/app/main.py` (placeholder)
-     - `/workspace/projects/backend/requirements.txt`
-     - `/workspace/projects/frontend/.sandbox-project.json` (with `depends_on: ["backend"]`)
-     - `/workspace/projects/frontend/package.json`
-     - `/workspace/projects/frontend/index.html` (placeholder)
-     - `/workspace/projects/frontend/src/main.tsx` (placeholder)
-   This commits you to the app being TWO managed projects, with
-   ordering encoded in the frontend's `depends_on`.
+1. The **FIRST `file_write` in this task** is the project skeleton.
+   Before any `code_exec`, before any `npm install`, before any
+   feature code, you write:
+     - `/workspace/projects/app/.sandbox-project.json`
+     - `/workspace/projects/app/package.json`
+     - `/workspace/projects/app/next.config.mjs`
+     - `/workspace/projects/app/tsconfig.json`
+     - `/workspace/projects/app/src/app/layout.tsx` (placeholder)
+     - `/workspace/projects/app/src/app/page.tsx` (placeholder)
+   This commits you to the app being ONE managed project.
 2. Use `code_exec` for **ad-hoc exploration ONLY** — sample queries, a
-   `df.head()`, a quick histogram. ≤30 lines per call. Never put
+   schema probe, a quick histogram. ≤30 lines per call. Never put
    business logic, routes, or React components in the kernel.
-3. The moment you're writing a real route handler, a service
-   function, or a React page: `file_write` it into the matching
-   feature folder. The kernel is a scratch buffer, not your codebase.
-4. The app isn't "built" until `project_list` reports both projects
-   `running` with discovered ports. Empty `project_list` means you
-   have to start over. A page rendered in a Claude.ai artifact does
-   NOT substitute for a managed project.
+3. The moment you're writing a real route, a server action, a UI
+   component, or a data-access function: `file_write` it into the
+   matching folder. The kernel is a scratch buffer, not your codebase.
+4. The app isn't "built" until `project_list` reports the project
+   `running` with port `3000` discovered. Empty `project_list` means
+   you have to start over. A page rendered in a Claude.ai artifact
+   does NOT substitute for a managed project.
 
-### Quoting `pip install` versions
+### Quoting `npm install` flags
 
-`pip install fastapi>=0.115` runs in bash, which sees `>=0.115` as
-output redirection and creates an empty file named `=0.115` in the
-current directory. ALWAYS quote pinned versions OR write
-`requirements.txt` first via `file_write` and `pip install -r
-requirements.txt`. Same applies to `npm install` flags that contain
-shell metacharacters.
+`npm install foo@>=2` runs in bash, which sees `>=2` as output
+redirection and creates an empty file named `=2` in the current
+directory. ALWAYS quote pinned versions OR write `package.json`
+first via `file_write` and `npm install` (no args, reads
+package.json). Same applies to any shell command with `<`, `>`, `|`,
+`&`, `;` in the argument.
 
-## Layout — two managed projects
+## Layout — one managed Next.js project
 
 ```
 /workspace/
-├── projects/
-│   ├── backend/
-│   │   ├── .sandbox-project.json     # type: "service"
-│   │   ├── requirements.txt
-│   │   ├── README.md
-│   │   └── app/
-│   │       ├── __init__.py
-│   │       ├── main.py               # FastAPI wiring (~40 lines)
-│   │       ├── config.py             # env-driven settings (~30 lines)
-│   │       ├── deps.py               # shared DI providers (~30 lines)
-│   │       ├── data/
-│   │       │   ├── __init__.py
-│   │       │   └── db.py             # your DB client / API client / store
-│   │       ├── <feature>/
-│   │       │   ├── __init__.py
-│   │       │   ├── routes.py         # HTTP layer (~60-80 lines)
-│   │       │   ├── service.py        # business logic (~60-80 lines)
-│   │       │   ├── schema.py         # pydantic models (~40 lines)
-│   │       │   └── service_test.py
-│   │       └── <other-feature>/      # same shape
-│   └── frontend/
-│       ├── .sandbox-project.json     # type: "app"
-│       ├── package.json
-│       ├── tsconfig.json
-│       ├── vite.config.ts
-│       ├── index.html
-│       └── src/
-│           ├── main.tsx              # entrypoint, mount, router (~30 lines)
-│           ├── App.tsx               # top-level layout + routes (~50 lines)
-│           ├── api/
-│           │   ├── client.ts         # fetch wrapper, baseURL (~40 lines)
-│           │   └── <feature>.ts      # per-feature API fns (~50 lines)
-│           ├── pages/
-│           │   └── <Feature>Page.tsx # one page per route (~80 lines)
-│           ├── components/
-│           │   └── <Thing>.tsx       # one component per file
-│           ├── hooks/
-│           │   └── use<Thing>.ts     # one hook per file
-│           └── lib/
-│               └── format.ts         # tiny shared utilities
+└── projects/
+    └── app/
+        ├── .sandbox-project.json     # type: "app"
+        ├── package.json
+        ├── next.config.mjs
+        ├── tsconfig.json
+        ├── .gitignore
+        └── src/
+            ├── app/
+            │   ├── layout.tsx        # root layout (~30 lines)
+            │   ├── page.tsx          # / route (~50 lines)
+            │   ├── globals.css       # tailwind imports or plain CSS
+            │   ├── <feature>/
+            │   │   └── page.tsx      # /<feature> route
+            │   └── api/
+            │       └── <feature>/
+            │           └── route.ts  # GET/POST/... handlers
+            ├── components/
+            │   └── <Thing>.tsx       # one file per component, ~80 lines max
+            ├── lib/
+            │   ├── db.ts             # DB client (drizzle / postgres.js / …)
+            │   ├── <feature>/
+            │   │   ├── queries.ts    # DB / business logic
+            │   │   ├── schema.ts     # zod or drizzle schemas
+            │   │   └── queries.test.ts
+            │   └── format.ts         # tiny shared utilities
+            └── public/
+                └── favicon.svg
 ```
-
-Ordering between services lives in each project's `depends_on` —
-there's no separate stack manifest. `project_start_all` brings the
-whole tree up respecting those deps.
 
 Every file stays under ~100 lines. Feature-folder layout, not
 layer-folder. See `/etc/sandbox/docs/coding-style.md`.
 
-## Backend — minimum viable
+App Router note: `src/app/<feature>/page.tsx` is the page for
+`/feature`. `src/app/api/<feature>/route.ts` exports `GET`, `POST`,
+etc. handlers for `/api/feature`. Both live in the SAME project, get
+built into the SAME image, and run as ONE process. No CORS, no proxy,
+no fetching across services.
 
-### `requirements.txt`
-
-```
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic>=2
-# add domain libs only when you actually use them — your DB driver,
-# your HTTP client, boto3, etc.
-```
-
-### `app/config.py`
-
-```python
-"""Single source for env-driven settings."""
-import os
-from pydantic import BaseModel
-
-class Settings(BaseModel):
-    cors_origins: list[str] = ["*"]
-    # Add domain settings here as you add features (DB URL, API base
-    # URLs, paths under /etc/sandbox/creds/ that your app cares about).
-
-settings = Settings()
-```
-
-### `app/main.py`
-
-```python
-"""FastAPI app — wire routers, CORS, health. Keep this thin."""
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from .config import settings
-from .items.routes import router as items_router
-
-app = FastAPI(title="<app-name> API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_methods=["*"], allow_headers=["*"],
-)
-
-app.include_router(items_router, prefix="/api/items", tags=["items"])
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-```
-
-### `app/data/db.py`
-
-One place to construct your DB / API client and hand it back to
-services. Swap the implementation for your real upstream — SQLite,
-Postgres, REST API, gRPC, whatever the user actually wants. The
-shape stays the same.
-
-```python
-"""One place to construct the data backend. Import from here."""
-from functools import lru_cache
-import sqlite3
-
-@lru_cache(maxsize=1)
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect("/workspace/app.db", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-```
-
-### Per-feature triplet — `items/`
-
-`items/schema.py`:
-
-```python
-"""Wire-format types for the items feature."""
-from pydantic import BaseModel
-
-class Item(BaseModel):
-    id: int
-    name: str
-    qty: int
-```
-
-`items/service.py`:
-
-```python
-"""Business logic for the items feature. No HTTP types in here."""
-from ..data.db import get_conn
-from .schema import Item
-
-
-def list_items(limit: int = 50) -> list[Item]:
-    cur = get_conn().execute(
-        "SELECT id, name, qty FROM items ORDER BY id DESC LIMIT ?", (limit,)
-    )
-    return [Item(**dict(r)) for r in cur.fetchall()]
-```
-
-`items/routes.py`:
-
-```python
-"""HTTP layer for the items feature. Thin — delegate to service."""
-from fastapi import APIRouter, Query
-from .schema import Item
-from .service import list_items
-
-router = APIRouter()
-
-@router.get("", response_model=list[Item])
-def items(limit: int = Query(50, ge=1, le=500)):
-    return list_items(limit)
-```
-
-### `projects/backend/.sandbox-project.json`
-
-```json
-{
-  "name": "backend",
-  "type": "service",
-  "start_command": ["python3", "-m", "uvicorn", "app.main:app",
-                    "--host", "0.0.0.0", "--port", "8001", "--reload"],
-  "auto_restart": true,
-  "env": { "PYTHONUNBUFFERED": "1" },
-  "health_check": { "port": 8001, "path": "/health" }
-}
-```
-
-Cwd is `/workspace/projects/backend/`, so `app.main:app` resolves to
-`/workspace/projects/backend/app/main.py`.
-
-## Frontend — minimum viable (Vite + React + TS)
+## Minimum viable — files to scaffold
 
 ### `package.json`
 
 ```json
 {
-  "name": "<app-name>-frontend",
+  "name": "<app-name>",
   "private": true,
-  "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.0"
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "typescript": "^5.6.0",
-    "vite": "^5.4.0"
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
   }
 }
 ```
 
-### `vite.config.ts`
+Add libraries to `dependencies` only as you use them. Common picks:
+- DB: `postgres` (postgres.js — small, fast, supports prepared statements) OR `drizzle-orm` (typed query builder + migrations)
+- Validation: `zod`
+- Forms: react-hook-form + zod
+- Tailwind: `tailwindcss postcss autoprefixer` + Tailwind config
+- Auth (if needed): `lucia` (lightweight) or `next-auth` (more turnkey)
 
-```ts
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+Don't pull in a UI kit (shadcn, MUI) unless the user asks — vanilla CSS or Tailwind covers most demos.
 
-export default defineConfig({
-  plugins: [react()],
-  // `base: "./"` keeps emitted asset paths relative — works whether
-  // the operator's tunneling layer fronts you at the root or under a
-  // path prefix.
-  base: "./",
-  server: {
-    host: "0.0.0.0",
-    port: 5173,
-    // Proxy /api → backend so the frontend can use relative URLs and
-    // doesn't need CORS in production.
-    proxy: { "/api": "http://localhost:8001" },
-  },
-});
+### `next.config.mjs`
+
+```js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // Standalone output ships a self-contained server we can run
+  // without node_modules — keeps the deploy image small.
+  output: 'standalone',
+};
+export default nextConfig;
 ```
 
 ### `tsconfig.json`
+
+Use the one Next.js scaffolds — it generates correctly on first
+`next dev` if absent. Acceptable starter:
 
 ```json
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "esModuleInterop": true,
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": false,
-    "noEmit": true
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"]
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
 }
 ```
 
-### `index.html`
-
-```html
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title><app-name></title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
-```
-
-### `src/main.tsx`
+### `src/app/layout.tsx`
 
 ```tsx
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import App from "./App";
+import type { Metadata } from "next";
+import "./globals.css";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>,
-);
-```
+export const metadata: Metadata = {
+  title: "<app-name>",
+};
 
-### `src/App.tsx`
-
-```tsx
-import { Routes, Route, Link } from "react-router-dom";
-import OverviewPage from "./pages/OverviewPage";
-import TransactionsPage from "./pages/TransactionsPage";
-
-export default function App() {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="app">
-      <nav>
-        <Link to="/">Overview</Link> {" · "}
-        <Link to="/transactions">Transactions</Link>
-      </nav>
-      <main>
-        <Routes>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/transactions" element={<TransactionsPage />} />
-        </Routes>
-      </main>
-    </div>
+    <html lang="en">
+      <body>{children}</body>
+    </html>
   );
 }
 ```
 
-### `src/api/client.ts`
+### `src/app/page.tsx` (Server Component — common case)
 
-```ts
-// Relative baseURL — Vite proxies /api → http://localhost:8001 in dev.
-// In production the operator's tunneling layer fronts both ports under
-// the same host, so the same relative path keeps working.
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-  return res.json() as Promise<T>;
+```tsx
+// Default: Server Components. Fetch data directly here — no /api hop,
+// no useEffect, no loading state, the server renders with data.
+import { listItems } from "@/lib/items/queries";
+
+export default async function HomePage() {
+  const items = await listItems();
+  return (
+    <main>
+      <h1>Items</h1>
+      <ul>
+        {items.map((it) => (
+          <li key={it.id}>{it.name} — qty {it.qty}</li>
+        ))}
+      </ul>
+    </main>
+  );
 }
 ```
 
-### `src/api/items.ts`
+### `src/app/api/items/route.ts` (only when something OUTSIDE this app needs to hit it)
 
 ```ts
-import { api } from "./client";
+import { NextResponse } from "next/server";
+import { listItems } from "@/lib/items/queries";
+
+export async function GET() {
+  const items = await listItems();
+  return NextResponse.json(items);
+}
+```
+
+> Most pages should NOT call `/api/*` from the browser. Server
+> Components fetch directly via `queries.ts`. Use `/api/*` only when
+> something other than this app needs the data — webhooks, an external
+> caller, the LLM testing via curl.
+
+### `src/lib/db.ts` — Postgres
+
+```ts
+// Reads DATABASE_URL — set by `agentry service bind postgres` or via
+// the dashboard's Service catalog. Don't construct the URL by hand.
+import postgres from "postgres";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __pg: ReturnType<typeof postgres> | undefined;
+}
+
+// HMR-safe singleton: Next.js dev reloads modules, so the global
+// guard stops us from leaking new pools on every save.
+export const sql = global.__pg ?? postgres(process.env.DATABASE_URL!, {
+  max: 5,
+  idle_timeout: 30,
+});
+if (process.env.NODE_ENV !== "production") global.__pg = sql;
+```
+
+For other databases:
+- **MongoDB**: `import { MongoClient } from "mongodb"` reading `MONGODB_URL`
+- **Redis**: `import Redis from "ioredis"` reading `REDIS_URL`
+- **MySQL**: `import mysql from "mysql2/promise"` reading `DATABASE_URL`
+- **ClickHouse**: `import { createClient } from "@clickhouse/client"` reading `CLICKHOUSE_URL`
+
+### `src/lib/items/queries.ts` — feature logic
+
+```ts
+import { sql } from "@/lib/db";
 
 export type Item = {
   id: number;
@@ -391,168 +268,164 @@ export type Item = {
   qty: number;
 };
 
-export function fetchItems(limit = 50) {
-  return api<Item[]>(`/items?limit=${limit}`);
+export async function listItems(limit = 50): Promise<Item[]> {
+  return sql<Item[]>`
+    SELECT id, name, qty FROM items ORDER BY id DESC LIMIT ${limit}
+  `;
 }
 ```
 
-### `src/pages/ItemsPage.tsx`
-
-```tsx
-import { useEffect, useState } from "react";
-import { Item, fetchItems } from "../api/items";
-
-export default function ItemsPage() {
-  const [items, setItems] = useState<Item[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchItems().then(setItems).catch((e) => setError(String(e)));
-  }, []);
-
-  if (error) return <pre style={{ color: "crimson" }}>{error}</pre>;
-  if (!items) return <p>Loading…</p>;
-  return (
-    <section>
-      <h1>Items</h1>
-      <ul>
-        {items.map((it) => (
-          <li key={it.id}>{it.name} — qty {it.qty}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-```
-
-### `projects/frontend/.sandbox-project.json`
+### `.sandbox-project.json`
 
 ```json
 {
-  "name": "frontend",
+  "name": "app",
   "type": "app",
-  "start_command": ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"],
+  "start_command": ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"],
   "auto_restart": true,
-  "depends_on": ["backend"]
+  "env": { "NODE_ENV": "development" },
+  "health_check": { "port": 3000, "path": "/" }
 }
 ```
+
+## Services — what's available + how to wire them in
+
+Tell the user what they need to bind BEFORE writing data-access
+code. Then write code that reads env vars; never hardcode connection
+strings or API keys.
+
+| Service     | Env var(s)                                | Node SDK                 |
+|-------------|-------------------------------------------|--------------------------|
+| postgres    | `DATABASE_URL`                            | `postgres` or `drizzle`  |
+| mysql       | `DATABASE_URL`                            | `mysql2`                 |
+| mongodb     | `MONGODB_URL`                             | `mongodb`                |
+| redis       | `REDIS_URL`                               | `ioredis`                |
+| clickhouse  | `CLICKHOUSE_URL` etc.                     | `@clickhouse/client`     |
+| aws-s3      | `AWS_ACCESS_KEY_ID` etc.                  | `@aws-sdk/client-s3`     |
+| smtp        | `SMTP_HOST`, `SMTP_PORT` etc.             | `nodemailer`             |
+| stripe      | `STRIPE_SECRET_KEY`                       | `stripe`                 |
+| openai      | `OPENAI_API_KEY`                          | `openai`                 |
+| anthropic   | `ANTHROPIC_API_KEY`                       | `@anthropic-ai/sdk`      |
+
+Pattern, ALWAYS:
+1. `service_list` to confirm what the cluster has bindable.
+2. `service_bind(sandbox_id=..., service="postgres")` with the user's
+   real credentials.
+3. Read env vars in your code (`process.env.DATABASE_URL!`). Never
+   hardcode. Never inline secrets.
+4. Start the project (`project_start`) AFTER the bind so the shell
+   shim picks up the env on launch.
 
 ## Recipe — end-to-end
 
 Do these in order. **Don't skip step 0.**
 
 0. **SCAFFOLD FIRST (before any exploration, install, or feature
-   code).** `file_write` both project manifests and the placeholder
-   files listed in the rules block above. After this step:
+   code).** `file_write` the project manifest, `package.json`,
+   `next.config.mjs`, `tsconfig.json`, and placeholder
+   `src/app/layout.tsx` + `src/app/page.tsx`. After this step:
 
-   ```bash
-   command_run "ls -R /workspace/projects"
+   ```
+   command_run "ls -R /workspace/projects/app"
    ```
 
-   should show both project trees. The app exists as a project shape.
-   Now you can explore safely without losing track.
+   should show the project tree. The app exists as a shape. Now you
+   can explore safely.
 
-1. **Confirm the data shape.** If the app reads from an upstream (DB,
-   API, file dump, …), open a Jupyter context and probe the schema
-   first — a few sample rows, the column types, the rough cardinality.
-   Use `code_exec` for this — but each call <30 lines, throwaway
-   only. The moment you want to keep a query, `file_write` it into
-   `backend/app/<feature>/service.py`.
+1. **Confirm the data shape.** If the app reads from an upstream
+   (DB, API, file dump, …), `code_exec` a quick schema probe. <30
+   lines per call, throwaway only. The moment you want to keep a
+   query, `file_write` it into `src/lib/<feature>/queries.ts`.
 
-2. **Sketch the feature list.** 3-5 features max for v1. Each becomes a
-   feature folder in both backend (`app/<feature>/`) and frontend
-   (`pages/<Feature>Page.tsx` + `api/<feature>.ts`).
+2. **Sketch the feature list.** 3-5 routes max for v1. Each becomes
+   a folder under `src/app/<feature>/` plus matching
+   `src/lib/<feature>/`.
 
-3. **Backend, in order**: `requirements.txt`, `app/config.py`,
-   `app/data/db.py` (or the equivalent client for your upstream), then
-   per-feature `routes.py`+`service.py`+`schema.py`, then `app/main.py`
-   last (it imports everything). Update the placeholder `main.py`
-   from step 0 in place.
+3. **Bind services the user needs** (postgres, redis, openai, …)
+   via `service_bind`. Confirm `service_list(secrets=true)` shows
+   the env vars now present.
 
-4. `command_run "cd /workspace/projects/backend && pip install -r requirements.txt"`.
+4. **Write the project, in order**:
+   - `src/lib/db.ts` (or the right client for your upstream)
+   - per-feature `src/lib/<feature>/queries.ts` + `schema.ts`
+   - per-feature `src/app/<feature>/page.tsx` (Server Component
+     calling queries directly)
+   - `src/app/api/<feature>/route.ts` ONLY if something external
+     needs to hit it
+   - `src/app/page.tsx` and `src/app/layout.tsx` finalised
 
-5. **Frontend, in order**: replace the placeholder `package.json` /
-   `index.html` / `src/main.tsx` from step 0, then add
-   `tsconfig.json`, `vite.config.ts`, `src/App.tsx`,
-   `src/api/client.ts`, then per-feature `api/<f>.ts` +
-   `pages/<F>Page.tsx`.
+5. `command_run "cd /workspace/projects/app && npm install"` (takes
+   ~30-60 s on a cold cache).
 
-6. `command_run "cd /workspace/projects/frontend && npm install"`
-   (takes ~30-60 s on a cold cache).
+6. **Update the manifest** — confirm `.sandbox-project.json`'s
+   `start_command` and `health_check.port` match.
 
-7. **Finalise manifests**: revisit `backend/.sandbox-project.json` and
-   `frontend/.sandbox-project.json` from step 0 and update their
-   `start_command` / `health_check` now that the entrypoints exist.
-   Make sure `frontend.depends_on = ["backend"]` so ordering is
-   respected.
+7. `project_start` — starts Next.js dev server with auto-restart.
 
-8. `project_start_all` — the manager brings up backend first
-   (depends_on chain), then frontend, both with auto-restart.
+8. Verify:
+   - `project_list` → project `running`, port `[3000]` discovered,
+     `healthy`.
+   - `curl http://localhost:3000/` (inside the sandbox via
+     `command_run`) → returns HTML.
 
-9. Verify:
-   - `project_list` → both projects `running`, ports `[8001]` and
-     `[5173]` discovered, both `healthy`.
-   - `curl http://localhost:8001/health` (inside the sandbox via
-     command_run) → `{"ok": true}`.
+9. Tell the user how to access the app. Per the access-from-browser
+   recipe in the parent server-instructions block, hand them either:
+   - "Click Share in the dashboard's Shared ports panel on port 3000"
+     for a quick preview link, or
+   - "Click Deploy to ship a prod build with a durable URL."
 
-10. Tell the user how to open the frontend. The recipe is ALWAYS
-    these two lines — do not construct any URL yourself, do not
-    paste the sandbox_url, do not build paths off broker.invalid:
-
-       Run this in another terminal:
-           xdp forward <sandbox-id>:5173
-       then open http://localhost:5173/ in your browser.
-
-    Substitute the actual sandbox id. Don't keep the chat going to
-    "test" — that's the user's job. Stop.
+   Don't construct URLs yourself. Don't paste internal hostnames.
+   Don't keep the chat going to "test" — that's the user's job. Stop.
 
 ### The exit check
 
 Before you tell the user "the app is up," run:
 
-```bash
-command_run "ls -R /workspace/projects/backend /workspace/projects/frontend"
-command_run "wc -l /workspace/projects/backend/app/**/*.py /workspace/projects/frontend/src/**/*.{ts,tsx}"
-# and:
+```
+command_run "ls -R /workspace/projects/app/src"
+command_run "wc -l /workspace/projects/app/src/**/*.{ts,tsx}"
 project_list(sandbox_url=...)
 ```
 
-You should see: both project trees on disk, every file under ~100
-lines, and both projects running with discovered ports. If any of
-those three checks fail, you haven't finished — keep going. A
-Claude.ai artifact is NOT a substitute for a managed project; if the
-only thing you produced is a React page rendered in the chat, you
-built nothing.
+You should see: the project tree on disk, every file under ~100
+lines, the project running with port 3000 discovered. If any of
+those three checks fail, you haven't finished — keep going.
 
-## Frontend gotchas under operator tunneling
+## Patterns to lean on
 
-The operator's tunneling layer may front the frontend on a subpath or
-a fresh subdomain — write code that survives either. Defenses:
-
-- `vite.config.ts` has `base: "./"` so emitted JS/CSS paths are
-  relative.
-- Use `react-router-dom`'s `BrowserRouter`; if the tunnel uses a
-  subpath and route-not-found shows up, swap to `HashRouter` — paths
-  like `/#/transactions` survive any prefix.
-- API calls should be relative (`fetch("/api/...")`) so the same code
-  runs in dev (Vite proxy) and behind whatever the operator's tunnel
-  routes through.
+- **Server Components by default** — page.tsx is `async`, calls
+  queries directly, server-renders with data. No useEffect, no
+  loading flicker, no /api hop.
+- **Server Actions for mutations** — `"use server"` on a function
+  in `actions.ts`; form `action={createItem}` posts directly.
+- **`/api/*` ONLY for external callers** — webhooks, integration
+  endpoints, the LLM hitting it with curl. Your own pages don't.
+- **`zod` validates everything from outside** — form input, request
+  body, query string. Parse it; don't trust it.
+- **One file, one component** — `page.tsx` for the route; everything
+  else in `components/`. Hard cap ~100 lines.
 
 ## Common pitfalls
 
-- **Don't put SQL strings in `routes.py`** — they belong in
-  `service.py`. The HTTP layer should be unit-testable without a
-  database mock.
-- **Don't write a 400-line `App.tsx`.** Pages go in `pages/`,
-  components in `components/`. `App.tsx` is just the router.
-- **Don't `pip install` from inside the running uvicorn process.** Stop
-  the project first (`project_stop`), install, restart.
-- **Don't open a fresh upstream connection per request.** `lru_cache`
-  the client; let the driver pool or your HTTP session handle reuse.
-  Fresh connections can cost hundreds of milliseconds each.
-- **Don't reach for Next.js.** A SPA behind an operator tunnel is
-  simpler; Next's SSR + routing assumptions fight subpath prefixes if
-  the tunnel uses one.
-- **Don't drive multiple `project_start` calls by hand.** Use
-  `project_start_all` for the whole tree — one tool call, dependency
-  order respected via each project's `depends_on`.
+- **Don't split into projects/backend + projects/frontend.** The
+  whole point of Next.js here is that the API and UI live in the
+  same project. If you find yourself wanting a separate FastAPI
+  service, ask the user — most of the time the answer is "no, just
+  add a route handler in the existing app."
+- **Don't fetch your own /api/* from a page.** Server Components
+  call the underlying function directly. `/api/*` is for outside
+  consumers.
+- **Don't `npm install` while `next dev` is running.** Stop the
+  project first (`project_stop`), install, then `project_start`.
+  HMR breaks weirdly otherwise.
+- **Don't open a fresh client per request.** Module-scoped
+  singletons (with the HMR guard above) — pooling is the driver's
+  job, opening is yours.
+- **Don't hardcode connection strings or API keys.** They come from
+  env vars set by `service_bind`. If you find yourself typing
+  `postgres://`, you're doing it wrong.
+- **Don't reach for a state-management library on day 1.**
+  `useState` + `useReducer` cover almost every dashboard. Redux /
+  Zustand / Jotai only when there's a real ask.
+- **Don't write CSS-in-JS unless asked.** Tailwind or a plain
+  `globals.css` is plenty for v1.

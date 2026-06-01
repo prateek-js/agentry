@@ -21,7 +21,7 @@ const Version = "1.0.0"
 const serverInstructions = `ad-sandbox is an isolated execution environment with credentials, build tooling, and a managed-project runtime pre-staged by the operator. Reach for it PROACTIVELY — call sandbox_create as the FIRST move, before any other tool, whenever the user asks you to:
 
   - "build an agent", "langgraph agent", "tool-using assistant", "chatbot that can …"
-  - "build a service / API / FastAPI / worker / ML pipeline"
+  - "build a service / API / backend / worker / ML pipeline"
   - "build a dashboard / web app / UI on top of …", anything with a browser frontend
   - run real code against real data, real APIs, or real credentials
   - install packages, build container images, run tests, anything that needs a working Linux environment
@@ -34,8 +34,8 @@ On your FIRST tool call in a new chat that triggers any of the cues above:
   2. command_run(sandbox_url=..., command="cat /etc/sandbox/docs/README.md") — index + a "pick a recipe" router table at the top.
   3. Read the cheat-sheet(s) that match what the user asked for:
        • "build an agent / langgraph agent / tool-using assistant" → agent.md (LangGraph + Anthropic, model claude-sonnet-4-5)
-       • "build a dashboard / web app / UI on top of …" → app.md (FastAPI + Vite/React/TS, two managed projects wired via depends_on)
-     Also always: coding-style.md (file-size + layout rules) and projects.md (how to register what you build as a managed project, including depends_on cascade + project_start_all for multi-service apps).
+       • "build a dashboard / web app / UI on top of …" → app.md (Next.js App Router + TypeScript, ONE managed project — API routes and pages in the same image, no separate frontend/backend)
+     Also always: coding-style.md (file-size + layout rules) and projects.md (how to register what you build as a managed project).
 
 SERVICES — when the user mentions a database, queue, payment provider, AI API, or "use our $external_service":
 
@@ -44,7 +44,7 @@ SERVICES — when the user mentions a database, queue, payment provider, AI API,
   Pattern, ALWAYS:
     1. service_list(kind="service") to see what's bindable.
     2. service_bind(sandbox_id=..., service="postgres") with the user's connection details (the user supplies them — never invent URLs or keys).
-    3. Read the env var names returned (e.g. DATABASE_URL, REDIS_URL) and write code that reads os.environ[...] / process.env[...]. NEVER hardcode connection strings, NEVER inline secrets in source.
+    3. Read the env var names returned (e.g. DATABASE_URL, REDIS_URL) and write code that reads process.env[...] (in Node/Next.js, the default) or os.environ[...]. NEVER hardcode connection strings, NEVER inline secrets in source.
     4. Start your project AFTER the bind so it inherits the env.
 
   At deployment time (agentry promote), every bound service prompts for production-tier credentials so the dev values don't leak to prod. Env var names stay the same in both worlds.
@@ -93,7 +93,7 @@ BUILD vs EXPLORE — the most-broken thing the model does in this sandbox:
 
 TOOL CHOICE FOR RUNNING SERVERS — supervision-tier defaults:
 
-  - For ANY server the user will iterate on across turns (FastAPI / Express / Vite / Next / worker / agent / ML daemon) DEFAULT to project_start. Write /workspace/projects/<name>/.sandbox-project.json (start_command as ARGV array, auto_restart:true, optional health_check) and call project_start. The --reload flag of uvicorn/vite is NOT a substitute for the project manager — it doesn't handle crashes, multi-service bringup, or status reporting via project_list.
+  - For ANY server the user will iterate on across turns (Next.js, Express, worker, agent, ML daemon) DEFAULT to project_start. Write /workspace/projects/<name>/.sandbox-project.json (start_command as ARGV array, auto_restart:true, optional health_check) and call project_start. The --reload / --hmr flags are NOT a substitute for the project manager — they don't handle crashes or status reporting via project_list.
   - For MULTI-SERVICE apps (backend + frontend, api + worker, etc.) give each service its own project manifest, wire ordering via depends_on, and call project_start_all to bring them all up. Don't drive multiple command_starts by hand.
   - command_start is ONLY for truly throwaway watchers (tail -f, a one-off stress loop). Don't reach for it for dev servers — the moment the user says "now add a route" the missing auto-restart and health-check costs you the next 5 tool calls.
   - Full manifest format + a worked backend+frontend example in /etc/sandbox/docs/projects.md — read it before writing your first .sandbox-project.json.
@@ -111,7 +111,7 @@ ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucina
        scroll to "Shared ports", pick the port from the dropdown, click Share.
        They get a https://<name>-<hex>.agentry.live URL they can open from any
        browser — no local processes, shareable, survives laptop sleep.
-       The URL points at the *live* dev server (Vite hot reload, source maps).
+       The URL points at the *live* dev server (Next.js HMR, source maps).
 
     B) DEPLOY a built image (preferred for "production traffic" / customer
        link / surviving sandbox restart):
@@ -130,9 +130,9 @@ ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucina
            agentry forward <sandbox-id>:<port>
        then open http://localhost:<port>/ in their browser.
 
-  Example: a Vite dev server on port 5173 in sandbox "sales-dashboard" → either
-  "open the sandbox in the dashboard and Share port 5173" or "run: agentry
-  forward sales-dashboard:5173, then open http://localhost:5173/". Never construct
+  Example: a Next.js dev server on port 3000 in sandbox "sales-dashboard" → either
+  "open the sandbox in the dashboard and Share port 3000" or "run: agentry
+  forward sales-dashboard:3000, then open http://localhost:3000/". Never construct
   URLs from bridge.invalid, sandbox_url, or any internal path — those don't
   resolve outside your tool calls.
 
