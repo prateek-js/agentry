@@ -56,6 +56,11 @@ type Broker struct {
 	mu       sync.RWMutex
 	devices  map[string]*deviceConn
 	clusters map[string]*clusterConn
+
+	// deploy is the optional hostname → sandbox-port registry. Set via
+	// AttachDeploy from cmd/bridge after the registry exists. Nil when
+	// the bridge isn't configured for deployment ingress.
+	deploy *DeployRegistry
 }
 
 type deviceConn struct {
@@ -102,6 +107,8 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
 	mux.HandleFunc("DELETE /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxDelete)
 	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/runtime/{rest...}", b.handleClusterSandboxRuntime)
+	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
+	mux.HandleFunc("PUT /api/deploy-routes", b.handleDeployRoutesPut)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))

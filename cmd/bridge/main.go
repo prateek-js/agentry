@@ -145,13 +145,34 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
 	}
 
-	// Handler dispatch: deployment traffic skips the mTLS gate; the
-	// auth story there is Clerk cookie verification (lands later in
-	// this batch). For now we serve a placeholder so the cert + DNS
-	// path can be smoke-tested end-to-end before plumbing the proxy.
+	// Bridge deploy registry. Routes are pushed in via the bridge's
+	// admin API (/api/deploy-routes) — the control plane keeps the
+	// authoritative list, the bridge holds an in-memory mirror for
+	// the hot path.
+	deployReg := bridge.NewDeployRegistry()
+	b.AttachDeploy(deployReg)
+
+	// Handler dispatch:
+	//   - hostnames under deployDomain that have a registered route →
+	//     reverse-proxy through the cluster tunnel
+	//   - hostnames under deployDomain with no route → static placeholder
+	//   - everything else (bridge.agentry.run) → existing mTLS-gated
+	//     broker handler
+	//
+	// Clerk cookie middleware on deploy traffic lands in the next
+	// slice; today we serve the proxy unauthenticated to smoke the
+	// path end-to-end.
 	mainHandler := mtlsGate(b.Handler())
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain) {
+			host := r.Host
+			if i := strings.Index(host, ":"); i > 0 {
+				host = host[:i]
+			}
+			if _, ok := deployReg.Lookup(host); ok {
+				b.HandleDeployment(w, r)
+				return
+			}
 			deploymentPlaceholder(w, r, env.deployDomain)
 			return
 		}

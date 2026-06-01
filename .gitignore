@@ -8,9 +8,11 @@
 .env
 .env.*
 !.env.example
+# Build artifacts produced at repo root by `go build ./cmd/<name>`.
+# Anchored with a leading slash so we don't accidentally ignore
+# directories named the same (e.g. cmd/bridge, pkg/bridge, etc.).
 .DS_Store
-bridge
-agentry
-agentry-app
-agentry-bridge
-/bin/
+/bridge
+/agentry
+/agentry-app
+/agentry-bridge

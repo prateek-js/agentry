@@ -196,6 +196,13 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	mux.HandleFunc("GET /v1/ports", handlers.PortsListHandler)
 	mux.HandleFunc("POST /v1/ports/wait", handlers.PortWaitHandler)
 
+	// User-app reverse proxy. Browser traffic from a *.agentry.live
+	// deployment URL lands here as /v1/proxy/<port>/<rest> after the
+	// bridge → cluster tunnel → provisioner runtime_proxy chain.
+	// Streaming-by-default so SSE + WebSocket upgrades work.
+	mux.HandleFunc("/v1/proxy/{port}/{rest...}", handlers.AppProxyHandler)
+	mux.HandleFunc("/v1/proxy/{port}", handlers.AppProxyHandler)
+
 	// Port forwarding is handled OUTSIDE the mux as the CONNECT verb
 	// (see connectInterceptor) — anything that speaks TCP can ride it.
 
