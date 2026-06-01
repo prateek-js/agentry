@@ -6,36 +6,45 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
-// docker returns the daemon client when the backend supports it
-// (today: only DockerBackend). Used by the deploy build + run
-// handlers, which need ImageBuild / ContainerCreate operations the
-// generic Backend interface doesn't model.
-func (p *Provisioner) docker() (*client.Client, error) {
-	if d, ok := p.backend.(*DockerBackend); ok {
-		return d.Client(), nil
-	}
-	return nil, fmt.Errorf("deploy build requires docker backend (got %T)", p.backend)
-}
-
-// Deploy-build endpoint. Bundles a project under /workspace into a tar
-// stream inside the sandbox, then pipes it into Docker's ImageBuild on
-// the cluster's daemon. The resulting image lives in the cluster's
-// daemon and is what the cluster target's Deploy step runs.
+// Deploy-build endpoint.
 //
-// Why not buildah inside the sandbox: buildah images would live in the
-// sandbox's overlay storage and would need a save+load roundtrip to
-// reach the cluster's daemon. docker build straight off a tar stream
-// skips the round trip and uses the daemon's own layer cache.
+// User app → optimized image, with no Dockerfile required. Powered by
+// Railpack (https://github.com/railwayapp/railpack), the Nixpacks
+// successor: detects the project's stack (Node + Vite/Next, Python,
+// Go, Ruby, Rust, etc.) and builds via BuildKit. The image lands in
+// the cluster's Docker daemon — that's where the deployment container
+// runs from.
 //
-// Requires the project to already contain a Dockerfile. Auto-generation
-// per stack (Vite, FastAPI, Go, ...) is a follow-up — sketched in the
-// language detector below but not wired yet.
+// We shell out to the railpack binary rather than importing as a Go
+// library. Upside: cleaner upgrade story (pin a version in the
+// Dockerfile, bump on demand); we don't track railpack's internal API.
+// Downside: an extra process per build, slightly more error-prone log
+// parsing. Acceptable for now.
+//
+// Architecture inside the provisioner container:
+//
+//   1. Sandbox creates a tar of /workspace/<project> via runtime API.
+//   2. Provisioner extracts the tar to /tmp/buildctx-<deployment>/.
+//   3. Provisioner runs `railpack build <ctxdir> --name deploy-<...>`
+//      with BUILDKIT_HOST pointing at the BuildKit container we
+//      manage (see ensureBuildKit below).
+//   4. Image lands in the local Docker daemon; deploy_run uses it.
+//
+// Escape hatch for advanced apps: drop a `railpack.json` in the
+// project to override detection / install commands / start command.
+// We don't honor user-supplied Dockerfiles in this path — if you want
+// that level of control, you'd write a deploy_build hook (later).
 
 // DeployBuildRequest is the body for POST /api/sandboxes/{id}/deploy-build.
 type DeployBuildRequest struct {
@@ -44,17 +53,38 @@ type DeployBuildRequest struct {
 	// repos this is the project name under /workspace/projects/.
 	Project string `json:"project,omitempty"`
 
-	// ImageTag is the tag suffix used for the built image. The full
-	// image ref is "deploy-<sanitized-project>:<image_tag>".
+	// ImageTag is the tag suffix for the built image. The full ref is
+	// "deploy-<slug>:<image_tag>".
 	ImageTag string `json:"image_tag"`
 }
 
-// DeployBuildResponse echoes the resulting image ref. The cluster
-// target deploys this ref verbatim; the cloud-run target's Push step
-// re-tags it under the GCP Artifact Registry name.
+// DeployBuildResponse echoes the resulting image ref.
 type DeployBuildResponse struct {
 	ImageRef string `json:"image_ref"`
 }
+
+// docker returns the daemon client when the backend supports it
+// (today: only DockerBackend). Used by the deploy build + run handlers
+// for ImageBuild / ContainerCreate operations the generic Backend
+// interface doesn't model.
+func (p *Provisioner) docker() (*client.Client, error) {
+	if d, ok := p.backend.(*DockerBackend); ok {
+		return d.Client(), nil
+	}
+	return nil, fmt.Errorf("deploy build requires docker backend (got %T)", p.backend)
+}
+
+// buildKitContainerName is the name we use for the moby/buildkit
+// container the provisioner manages. Single shared instance per
+// cluster; railpack talks to it via BUILDKIT_HOST.
+const buildKitContainerName = "agentry-buildkit"
+
+// buildKitImage pins the BuildKit version. Track-with-buildkit-release
+// when you bump.
+const buildKitImage = "moby/buildkit:v0.16.0"
+
+// Guard so concurrent deploy-builds don't race the lazy ensureBuildKit.
+var buildKitMu sync.Mutex
 
 func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) {
 	sandboxID := r.PathValue("id")
@@ -78,79 +108,147 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	// Step 1: confirm the Dockerfile exists. Fail fast before we tar
-	// the workspace — a 4xx here is much clearer than a "no such file"
-	// halfway through a 200 MB build context upload.
-	check, err := p.runtimeShellExec(ctx, sandboxID,
-		fmt.Sprintf("test -f %s/Dockerfile && echo ok || echo missing", projectPath))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "dockerfile check: "+err.Error())
-		return
-	}
-	if strings.TrimSpace(check) != "ok" {
-		writeError(w, http.StatusBadRequest,
-			fmt.Sprintf("no Dockerfile at %s — auto-generation by stack is a follow-up", projectPath))
-		return
-	}
-
-	// Step 2: tar the context inside the sandbox.
-	tarPath := fmt.Sprintf("/tmp/build-ctx-%s.tar.gz", req.ImageTag)
-	if _, err := p.runtimeShellExec(ctx, sandboxID,
-		fmt.Sprintf("rm -f %s && tar czf %s -C %s . 2>&1", tarPath, tarPath, projectPath)); err != nil {
-		writeError(w, http.StatusBadGateway, "tar build context: "+err.Error())
-		return
-	}
-
-	// Step 3: stream the tarball from the runtime back into Docker's
-	// ImageBuild on this daemon. Docker accepts an arbitrary tar (gzip
-	// is auto-detected) as the build context.
-	stream, err := p.runtimeFileDownload(ctx, sandboxID, tarPath)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "download build context: "+err.Error())
-		return
-	}
-	defer stream.Close()
-
+	// Step 0: BuildKit container must be up. Lazy ensure on first build.
 	dockerCli, err := p.docker()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "docker client unavailable: "+err.Error())
 		return
 	}
-
-	buildResp, err := dockerCli.ImageBuild(ctx, stream, types.ImageBuildOptions{
-		Tags:       []string{imageRef},
-		Dockerfile: "Dockerfile",
-		Remove:     true,
-		// Force the build to fail fast on Dockerfile errors instead of
-		// hanging on push of a half-broken image.
-		ForceRemove: true,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "image build: "+err.Error())
+	if err := ensureBuildKit(ctx, dockerCli); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "buildkit bootstrap: "+err.Error())
 		return
 	}
-	defer buildResp.Body.Close()
 
-	// Consume the build log; on error this contains the docker daemon's
-	// reason. On success it's the "successfully tagged" line plus
-	// per-step logs. We surface tail to the caller for debug.
-	tail := drainBuildLog(buildResp.Body)
-
-	// Cleanup the tarball inside the sandbox best-effort.
-	_, _ = p.runtimeShellExec(context.Background(), sandboxID, "rm -f "+tarPath)
-
-	if strings.Contains(strings.ToLower(tail), "error") &&
-		!strings.Contains(strings.ToLower(tail), "successfully tagged") {
-		writeError(w, http.StatusBadGateway, "image build failed:\n"+tail)
+	// Step 1: tar the project inside the sandbox.
+	tarPathSandbox := fmt.Sprintf("/tmp/build-ctx-%s.tar.gz", req.ImageTag)
+	if _, err := p.runtimeShellExec(ctx, sandboxID,
+		fmt.Sprintf("rm -f %s && tar czf %s -C %s . 2>&1",
+			tarPathSandbox, tarPathSandbox, projectPath)); err != nil {
+		writeError(w, http.StatusBadGateway, "tar build context: "+err.Error())
 		return
+	}
+
+	// Step 2: download to provisioner-side dir, untar.
+	ctxDir := filepath.Join("/tmp", "buildctx-"+req.ImageTag)
+	if err := os.RemoveAll(ctxDir); err != nil {
+		writeError(w, http.StatusInternalServerError, "cleanup: "+err.Error())
+		return
+	}
+	if err := os.MkdirAll(ctxDir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "mkdir: "+err.Error())
+		return
+	}
+	defer func() {
+		_ = os.RemoveAll(ctxDir)
+		_, _ = p.runtimeShellExec(context.Background(), sandboxID, "rm -f "+tarPathSandbox)
+	}()
+
+	stream, err := p.runtimeFileDownload(ctx, sandboxID, tarPathSandbox)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "download build context: "+err.Error())
+		return
+	}
+	tarCmd := exec.CommandContext(ctx, "tar", "-xzf", "-", "-C", ctxDir)
+	tarCmd.Stdin = stream
+	tarOut, tarErr := tarCmd.CombinedOutput()
+	stream.Close()
+	if tarErr != nil {
+		writeError(w, http.StatusBadGateway,
+			fmt.Sprintf("untar build context: %v\n%s", tarErr, string(tarOut)))
+		return
+	}
+
+	// Step 3: railpack build. Image lands in the local docker daemon
+	// via BuildKit's docker exporter.
+	cmd := exec.CommandContext(ctx, "railpack", "build", ctxDir,
+		"--name", imageRef,
+		"--progress", "plain")
+	cmd.Env = append(os.Environ(),
+		"BUILDKIT_HOST=docker-container://"+buildKitContainerName,
+	)
+	out, runErr := cmd.CombinedOutput()
+	tail := tailLog(string(out), 4*1024)
+	if runErr != nil {
+		writeError(w, http.StatusBadGateway,
+			"railpack build failed: "+runErr.Error()+"\n\n"+tail)
+		return
+	}
+
+	// Step 4: verify the image actually landed in the daemon. railpack
+	// can return 0 from a partial run in some edge cases; double-check
+	// rather than trust the exit code alone.
+	imgs, err := dockerCli.ImageList(ctx, image.ListOptions{})
+	if err == nil {
+		found := false
+		for _, im := range imgs {
+			for _, tag := range im.RepoTags {
+				if tag == imageRef {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			writeError(w, http.StatusBadGateway,
+				"railpack reported success but image not in daemon:\n"+tail)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, DeployBuildResponse{ImageRef: imageRef})
 }
 
+// ensureBuildKit makes sure the BuildKit container is running. Lazy +
+// idempotent: first deploy-build creates it; subsequent ones reuse it.
+// Restart-aware: if the container exists but is stopped (provisioner
+// reboot), we Start() it.
+func ensureBuildKit(ctx context.Context, cli *client.Client) error {
+	buildKitMu.Lock()
+	defer buildKitMu.Unlock()
+
+	info, err := cli.ContainerInspect(ctx, buildKitContainerName)
+	if err == nil {
+		if info.State != nil && info.State.Running {
+			return nil
+		}
+		// Exists but stopped → start it.
+		if err := cli.ContainerStart(ctx, buildKitContainerName, container.StartOptions{}); err != nil {
+			return fmt.Errorf("start existing buildkit: %w", err)
+		}
+		return nil
+	}
+	// Doesn't exist → pull image, then create + start.
+	//
+	// ImagePull returns a ReadCloser of JSON progress events; the pull
+	// only actually completes once that stream is fully drained.
+	// Skipping the drain → ContainerCreate trips "No such image".
+	pullStream, err := cli.ImagePull(ctx, buildKitImage, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pull buildkit image: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, pullStream)
+	pullStream.Close()
+	created, err := cli.ContainerCreate(ctx,
+		&container.Config{Image: buildKitImage},
+		&container.HostConfig{
+			Privileged:    true,
+			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+		},
+		nil, nil, buildKitContainerName)
+	if err != nil {
+		return fmt.Errorf("create buildkit: %w", err)
+	}
+	if err := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("start buildkit: %w", err)
+	}
+	return nil
+}
+
 // runtimeFileDownload pulls a file from the sandbox via the runtime's
-// streaming download endpoint. Used to fetch large blobs (build
-// contexts, logs) without buffering in memory on either side.
+// streaming download endpoint.
 func (p *Provisioner) runtimeFileDownload(ctx context.Context, sandboxID, path string) (io.ReadCloser, error) {
 	port, err := p.backend.GetNodePort(ctx, p.config.Namespace, "sandbox-"+sandboxID+"-svc")
 	if err != nil || port == 0 {
@@ -174,37 +272,17 @@ func (p *Provisioner) runtimeFileDownload(ctx context.Context, sandboxID, path s
 	return resp.Body, nil
 }
 
-// drainBuildLog reads the JSON stream Docker emits during ImageBuild
-// and returns the last ~4 KB of decoded "stream" lines, which is what
-// the user wants to see in build output for diagnosis. Logs the
-// entire stream into the provisioner's stderr for ops visibility.
-func drainBuildLog(r io.Reader) string {
-	dec := json.NewDecoder(r)
-	var tail strings.Builder
-	for {
-		var msg struct {
-			Stream string `json:"stream"`
-			Error  string `json:"error"`
-		}
-		if err := dec.Decode(&msg); err != nil {
-			break
-		}
-		if msg.Error != "" {
-			tail.WriteString("ERROR: " + msg.Error + "\n")
-			continue
-		}
-		if msg.Stream == "" {
-			continue
-		}
-		tail.WriteString(msg.Stream)
-		// Cap so we don't grow unbounded on giant builds.
-		if tail.Len() > 16*1024 {
-			s := tail.String()
-			tail.Reset()
-			tail.WriteString(s[len(s)-4*1024:])
-		}
+// tailLog returns the last `max` bytes of s for inclusion in error
+// responses; trims to the start of a line so we don't show a half-line.
+func tailLog(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return tail.String()
+	tail := s[len(s)-max:]
+	if i := strings.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return tail
 }
 
 // projectPathAndSlug normalizes a user-supplied project name into the
@@ -224,8 +302,7 @@ func projectPathAndSlug(project string) (path, slug string) {
 }
 
 // sanitizeForDockerTag keeps lowercase alphanumerics + dashes; collapses
-// runs and trims trailing punctuation. Docker image tags must match
-// [a-zA-Z0-9_.-]+ but we narrow further to avoid surprises.
+// runs and trims trailing punctuation.
 func sanitizeForDockerTag(s string) string {
 	var b strings.Builder
 	prevDash := false
@@ -255,7 +332,7 @@ func sanitizeForDockerTag(s string) string {
 }
 
 // sanitizeTag clamps a user-supplied image tag suffix to Docker's
-// allowed character set. Reuses the slug sanitizer.
+// allowed character set.
 func sanitizeTag(s string) string {
 	return sanitizeForDockerTag(s)
 }

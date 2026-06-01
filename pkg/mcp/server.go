@@ -115,9 +115,14 @@ ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucina
 
     B) DEPLOY a built image (preferred for "production traffic" / customer
        link / surviving sandbox restart):
-       Call the deploy tool (or tell the user to click Deploy on the
-       dashboard). This builds a prod image from /workspace, runs it as
-       a separate container with prod env, returns a durable URL.
+       Tell the user to click Deploy on the dashboard's sandbox page (or
+       call the deploy tool when it's wired). agentry detects the stack
+       (Node + Vite/Next, Python, Go, Ruby, Rust, …) via railpack and
+       builds an optimized prod image — YOU DO NOT NEED TO WRITE A
+       DOCKERFILE. The image runs as a separate container with prod env
+       you set in the dashboard; URL survives sandbox restart. The
+       escape hatch for non-standard apps is a railpack.json config
+       file in the project (railway's docs cover it).
 
     C) FORWARD to a local port (preferred for "I'm developing against it
        locally and want curl/psql/debugger access"):
