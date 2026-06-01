@@ -62,48 +62,86 @@ func serviceBindCLI(args []string) int {
 	}
 	service := posArgs[0]
 
-	// Step 1 — fetch the catalog so we know which env vars to prompt for.
+	// Step 1 — fetch the catalog so we know which fields to prompt for.
 	entry, err := fetchCatalogService(service)
 	if err != nil {
 		return die("fetch catalog: %v", err)
 	}
 	if entry == nil {
-		return die("service %q not in cluster catalog (try `agentry service list`)", service)
+		return die("service %q not in cluster catalog (try `agentry service ls`)", service)
 	}
-	envVars, _ := entry["env_vars"].([]any)
-	if len(envVars) == 0 {
-		return die("catalog entry for %q has no env_vars declared", service)
+	fields, _ := entry["fields"].([]any)
+	if len(fields) == 0 {
+		return die("catalog entry for %q has no fields declared", service)
 	}
 
-	// Step 2 — collect values.
-	values := make(map[string]string, len(envVars))
-	for _, ev := range envVars {
-		name, _ := ev.(string)
+	// Step 2 — collect FIELD values (not env vars). One field can fan
+	// out to many env vars via the inject template (e.g. mongodb's
+	// `url` populates MONGODB_URL + MONGODB_URI + DATABASE_URL). Asking
+	// per env var would prompt the user three times for the same input.
+	fieldValues := make(map[string]string, len(fields))
+	for _, fRaw := range fields {
+		field, _ := fRaw.(map[string]any)
+		if field == nil {
+			continue
+		}
+		name, _ := field["name"].(string)
 		if name == "" {
 			continue
 		}
+		label, _ := field["label"].(string)
+		if label == "" {
+			label = name
+		}
+		secret, _ := field["secret"].(bool)
+		required, _ := field["required"].(bool)
+		defVal, _ := field["default"].(string)
+
 		if *fromEnv {
-			v := os.Getenv(name)
+			envName := strings.ToUpper(name)
+			v := os.Getenv(envName)
 			if v == "" {
-				return die("env var %s not set in current shell", name)
+				if required {
+					return die("env var %s not set in current shell (for field %q)", envName, name)
+				}
+				continue
 			}
-			values[name] = v
+			fieldValues[name] = v
 			continue
 		}
-		// Hidden prompt for anything that smells like a secret.
-		hidden := containsAny(name, "PASSWORD", "TOKEN", "SECRET", "KEY")
-		v, err := promptValue(name, hidden)
+
+		prompt := label
+		if defVal != "" {
+			prompt = fmt.Sprintf("%s [%s]", label, defVal)
+		}
+		v, err := promptValue(prompt, secret)
 		if err != nil {
 			return die("read %s: %v", name, err)
 		}
 		if v == "" {
+			v = defVal
+		}
+		if v == "" {
+			if required {
+				return die("%s is required", name)
+			}
 			fmt.Fprintf(os.Stderr, "(skipped %s — empty)\n", name)
 			continue
 		}
-		values[name] = v
+		fieldValues[name] = v
+	}
+	if len(fieldValues) == 0 {
+		return die("no values supplied; aborting bind")
+	}
+
+	// Step 3 — template fields into env vars using inject.env from the
+	// manifest. The server accepts pre-templated env values verbatim.
+	values, err := injectEnvFromFields(entry, fieldValues)
+	if err != nil {
+		return die("template env: %v", err)
 	}
 	if len(values) == 0 {
-		return die("no values supplied; aborting bind")
+		return die("catalog entry for %q has no inject.env declared", service)
 	}
 
 	version, _ := entry["version"].(string)
@@ -285,6 +323,70 @@ func fetchCatalogService(name string) (map[string]any, error) {
 		}
 	}
 	return nil, nil
+}
+
+// injectEnvFromFields runs the manifest's inject.env templating
+// locally. Each value (and key) in inject.env can contain {field-name}
+// placeholders that resolve against the user-supplied field map. We
+// expand them here so the bind request body looks the same as it
+// always has — server unchanged.
+//
+// Empty-value envs are dropped: a field that the user skipped should
+// not stamp a blank into the sandbox env (which can mask a real value
+// from another source).
+func injectEnvFromFields(entry map[string]any, fieldValues map[string]string) (map[string]string, error) {
+	inject, _ := entry["inject"].(map[string]any)
+	if inject == nil {
+		return nil, fmt.Errorf("manifest has no inject block")
+	}
+	envMap, _ := inject["env"].(map[string]any)
+	if len(envMap) == 0 {
+		return nil, fmt.Errorf("manifest has no inject.env entries")
+	}
+	out := make(map[string]string, len(envMap))
+	for keyTemplate, vRaw := range envMap {
+		valueTemplate, _ := vRaw.(string)
+		key := expandFields(keyTemplate, fieldValues)
+		value := expandFields(valueTemplate, fieldValues)
+		if key == "" || value == "" {
+			continue // user skipped the field this env depends on
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+// expandFields replaces `{name}` occurrences in s with fieldValues[name].
+// A placeholder whose field is missing returns the empty string for that
+// slot — caller decides whether that means "skip this env" or error.
+func expandFields(s string, fieldValues map[string]string) string {
+	if !strings.Contains(s, "{") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		open := strings.IndexByte(s[i:], '{')
+		if open < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		b.WriteString(s[i : i+open])
+		close := strings.IndexByte(s[i+open:], '}')
+		if close < 0 {
+			b.WriteString(s[i+open:])
+			break
+		}
+		name := s[i+open+1 : i+open+close]
+		if v, ok := fieldValues[name]; ok {
+			b.WriteString(v)
+		} else {
+			return "" // missing field → empty env (caller drops it)
+		}
+		i += open + close + 1
+	}
+	return b.String()
 }
 
 // promptValue prints label + ": " to stderr, reads one line of input.
