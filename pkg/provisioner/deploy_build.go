@@ -108,7 +108,31 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	// Step 0: BuildKit container must be up. Lazy ensure on first build.
+	// Step 0a: validate the project actually has source. The most common
+	// confusion: user clicks Deploy with project="foo" but the LLM
+	// scaffolded into /workspace/projects/bar/. We'd tar an empty
+	// directory and railpack would later fail with a baffling "could
+	// not determine how to build the app" — fail fast here with a list
+	// of what IS present instead.
+	if exists, _ := p.runtimeShellExec(ctx, sandboxID,
+		fmt.Sprintf("test -d %s && [ -n \"$(ls -A %s 2>/dev/null)\" ] && echo yes", projectPath, projectPath)); strings.TrimSpace(exists) != "yes" {
+		// Enumerate /workspace/projects/* (project subdirs) and the
+		// /workspace root for top-level files, so the user sees what's
+		// actually deployable.
+		subdirs, _ := p.runtimeShellExec(ctx, sandboxID,
+			"ls -d /workspace/projects/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null | head -10")
+		hint := strings.TrimSpace(subdirs)
+		msg := fmt.Sprintf("no source files at %s", projectPath)
+		if hint != "" {
+			msg += fmt.Sprintf(" — did you mean one of: %s?", strings.ReplaceAll(hint, "\n", ", "))
+		} else {
+			msg += " (and /workspace/projects/ is empty — the LLM may not have scaffolded the app yet)"
+		}
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	// Step 0b: BuildKit container must be up. Lazy ensure on first build.
 	dockerCli, err := p.docker()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "docker client unavailable: "+err.Error())
