@@ -1,0 +1,29 @@
+name: mongodb
+display_name: MongoDB
+category: database
+description: |
+  NoSQL document store. Quick prototypes, flexible-schema apps, and
+  many JS/TS app templates. Connect to Atlas, Render, or any MongoDB-
+  compatible host.
+
+fields:
+  - name: url
+    label: Connection URL
+    placeholder: mongodb+srv://user:pass@cluster.mongodb.net/db
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^mongodb(\+srv)?://.+$
+
+inject:
+  env:
+    MONGODB_URL: "{url}"
+    MONGODB_URI: "{url}"
+    DATABASE_URL: "{url}"
+  creds:
+    /etc/sandbox/creds/mongodb/url: "{url}"
+
+get_started: |
+  Free MongoDB for dev:
+  - **MongoDB Atlas** https://mongodb.com/atlas (512 MB free)
+  - Self-hosted: `docker run -d -p 27017:27017 mongo:7`

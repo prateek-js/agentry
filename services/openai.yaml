@@ -1,0 +1,39 @@
+name: openai
+display_name: OpenAI
+category: ai
+description: |
+  OpenAI API access. Inject as OPENAI_API_KEY — what every OpenAI client
+  library reads by default. Also injects OPENAI_BASE_URL when supplied,
+  so OpenAI-compatible providers (Together, Groq, etc.) plug in the same way.
+
+fields:
+  - name: api_key
+    label: API Key
+    placeholder: sk-proj-...
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^sk-.+$
+  - name: base_url
+    label: Base URL (blank for OpenAI; set for OpenAI-compatible providers)
+    placeholder: https://api.openai.com/v1
+    required: false
+  - name: organization
+    label: Organization ID (optional)
+    required: false
+
+inject:
+  env:
+    OPENAI_API_KEY: "{api_key}"
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_ORG_ID: "{organization}"
+  creds:
+    /etc/sandbox/creds/openai/key: "{api_key}"
+
+get_started: |
+  Get an API key at https://platform.openai.com/api-keys.
+
+  Compatible providers (use the same OpenAI client, set base_url):
+  - **Groq** https://groq.com (fast Llama, free tier)
+  - **Together AI** https://together.ai (broad model selection)
+  - **OpenRouter** https://openrouter.ai (one key for many models)

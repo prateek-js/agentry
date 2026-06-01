@@ -1,0 +1,45 @@
+name: clickhouse
+display_name: ClickHouse
+category: analytics
+description: |
+  Column-store analytics DB. Log aggregation, dashboards, event
+  analytics, time-series. Connect to ClickHouse Cloud, Altinity,
+  Tinybird, or self-hosted.
+
+fields:
+  - name: url
+    label: Connection URL
+    placeholder: https://account.region.aws.clickhouse.cloud:8443
+    required: true
+  - name: username
+    label: Username
+    default: default
+    required: true
+  - name: password
+    label: Password
+    secret: true
+    required: true
+    prod_required: true
+  - name: database
+    label: Default database
+    default: default
+    required: true
+
+inject:
+  env:
+    CLICKHOUSE_URL: "{url}"
+    CLICKHOUSE_USER: "{username}"
+    CLICKHOUSE_PASSWORD: "{password}"
+    CLICKHOUSE_DATABASE: "{database}"
+  creds:
+    /etc/sandbox/creds/clickhouse/config: |
+      url={url}
+      user={username}
+      password={password}
+      database={database}
+
+get_started: |
+  Free ClickHouse for dev:
+  - **ClickHouse Cloud** https://clickhouse.cloud ($300 free credits)
+  - **Tinybird** https://tinybird.co (free dev workspace)
+  - Self-hosted: `docker run -d -p 8123:8123 -p 9000:9000 clickhouse/clickhouse-server`

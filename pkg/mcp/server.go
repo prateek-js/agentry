@@ -37,19 +37,19 @@ On your FIRST tool call in a new chat that triggers any of the cues above:
        • "build a dashboard / web app / UI on top of …" → app.md (FastAPI + Vite/React/TS, two managed projects wired via depends_on)
      Also always: coding-style.md (file-size + layout rules) and projects.md (how to register what you build as a managed project, including depends_on cascade + project_start_all for multi-service apps).
 
-CLUSTER SERVICES — when the user mentions Trino, Spark, a query engine, a data lake, or "use our shared X":
+SERVICES — when the user mentions a database, queue, payment provider, AI API, or "use our $external_service":
 
-  Cluster services live in the catalog. service_list returns them with the canonical env var names XDP injects when the service is bound. service_bind wires the service into THIS sandbox — credential files land at /etc/sandbox/creds/xdp/<service>/<env-var>, the shell shim exports them on the next shell start, and any project started afterward inherits the env.
+  The cluster catalog (postgres, redis, mysql, mongodb, aws-s3, smtp, stripe, openai, anthropic, clickhouse, http-api, plus operator-defined ones) declares what env vars and cred-file paths each service exposes. service_bind wires the service into THIS sandbox: credential files land at /var/run/xdp/<service>/<env-var>, the shell shim exports them on the next shell start, and any project started afterward inherits the env.
 
   Pattern, ALWAYS:
-    1. service_list(kind="service") to see what's available.
-    2. service_bind(sandbox_id=..., service="trino") (or spark, etc).
-    3. Read the env var names returned (e.g. TRINO_URL, TRINO_USER) and write code that reads os.environ[...] / process.env[...]. NEVER hardcode connection strings.
+    1. service_list(kind="service") to see what's bindable.
+    2. service_bind(sandbox_id=..., service="postgres") with the user's connection details (the user supplies them — never invent URLs or keys).
+    3. Read the env var names returned (e.g. DATABASE_URL, REDIS_URL) and write code that reads os.environ[...] / process.env[...]. NEVER hardcode connection strings, NEVER inline secrets in source.
     4. Start your project AFTER the bind so it inherits the env.
 
-  At deployment time (later phase), every bound service automatically becomes a "requires" line in the deployment manifest and XDP injects prod-tier creds. Identical env names both worlds.
+  At deployment time (agentry promote), every bound service prompts for production-tier credentials so the dev values don't leak to prod. Env var names stay the same in both worlds.
 
-  If the user wants a database that's NOT a shared cluster service (their own throwaway postgres for dev experiments), use the dev_dep flow instead — service_list(kind="dev_dep") shows what's pre-canned.
+  Don't know a service URL? Tell the user: "I need a connection URL for X — pick a free tier (e.g. Supabase for postgres, Upstash for redis)." Don't proceed with placeholders.
 
 TOOL CHOICE FOR FILE I/O — pay attention, this is the #1 reason chats feel slow:
 

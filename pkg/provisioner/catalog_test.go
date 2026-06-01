@@ -18,14 +18,14 @@ func TestCatalogLoadsDefault(t *testing.T) {
 	if len(all) == 0 {
 		t.Fatal("default catalog should have entries")
 	}
-	// Spot-check: trino service present with the canonical env vars.
-	tr := c.Find("service", "trino", "")
-	if tr == nil {
-		t.Fatal("trino entry missing from default catalog")
+	// Spot-check: postgres service present with its canonical env vars.
+	pg := c.Find("service", "postgres", "")
+	if pg == nil {
+		t.Fatal("postgres entry missing from default catalog")
 	}
-	extra, _ := tr.Extra["env_vars"].([]any)
-	if len(extra) == 0 {
-		t.Errorf("trino entry missing env_vars; got %+v", tr.Extra)
+	envVars, _ := pg.Extra["env_vars"].([]any)
+	if len(envVars) == 0 {
+		t.Errorf("postgres entry missing env_vars; got %+v", pg.Extra)
 	}
 }
 
@@ -34,10 +34,8 @@ func TestCatalogByKind(t *testing.T) {
 	_ = c.LoadDefault()
 
 	services := c.ByKind("service")
-	devDeps := c.ByKind("dev_dep")
-	if len(services) == 0 || len(devDeps) == 0 {
-		t.Errorf("expected at least one service and one dev_dep; got %d/%d",
-			len(services), len(devDeps))
+	if len(services) == 0 {
+		t.Errorf("expected at least one service entry; got %d", len(services))
 	}
 	for _, e := range services {
 		if e.Kind != "service" {
@@ -49,16 +47,16 @@ func TestCatalogByKind(t *testing.T) {
 func TestCatalogFindByVersion(t *testing.T) {
 	c := NewCatalog()
 	c.Load([]CatalogEntry{
-		{Kind: "service", Name: "trino", Version: "1"},
-		{Kind: "service", Name: "trino", Version: "2"},
+		{Kind: "service", Name: "postgres", Version: "1"},
+		{Kind: "service", Name: "postgres", Version: "2"},
 	})
-	if e := c.Find("service", "trino", "2"); e == nil || e.Version != "2" {
+	if e := c.Find("service", "postgres", "2"); e == nil || e.Version != "2" {
 		t.Errorf("Find(version=2) got %+v", e)
 	}
-	if e := c.Find("service", "trino", ""); e == nil || e.Version != "1" {
+	if e := c.Find("service", "postgres", ""); e == nil || e.Version != "1" {
 		t.Errorf("Find(version='') should return first; got %+v", e)
 	}
-	if e := c.Find("service", "trino", "99"); e != nil {
+	if e := c.Find("service", "postgres", "99"); e != nil {
 		t.Errorf("Find(version=99) should miss; got %+v", e)
 	}
 }

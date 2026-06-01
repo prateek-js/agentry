@@ -1,0 +1,29 @@
+name: mysql
+display_name: MySQL
+category: database
+description: |
+  Popular relational database. The default for WordPress, Shopify-style
+  apps, and most legacy systems. Connect to PlanetScale, RDS, Render,
+  or any MySQL-compatible host.
+
+fields:
+  - name: url
+    label: Connection URL
+    placeholder: mysql://user:pass@host:3306/db
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^mysql://.+$
+
+inject:
+  env:
+    DATABASE_URL: "{url}"
+    MYSQL_URL: "{url}"
+  creds:
+    /etc/sandbox/creds/mysql/url: "{url}"
+
+get_started: |
+  Free MySQL for dev:
+  - **PlanetScale** https://planetscale.com (5 GB free, branching)
+  - **Render** https://render.com (free dev DB)
+  - Self-hosted: `docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=dev mysql:8`

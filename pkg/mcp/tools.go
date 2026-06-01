@@ -59,13 +59,12 @@ func Register(server *mcp.Server, c *Client) {
 		Name:        "sandbox_delete",
 		Description: "Tear down a sandbox by id. Always call when the user is done — sandboxes hold real Docker resources.",
 	}, sandboxDelete(c))
-	// — Catalog (what cluster services / dev-deps / skills exist) ─────
+	// — Catalog (bindable external services + skills) ─────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "service_list",
-		Description: "List cluster services the current cluster offers (Trino, Spark, shared-postgres, …). " +
-			"Each entry's `extra.env_vars` lists the env var names XDP will inject when the service is bound — read those in your code. " +
-			"With `kind` set, narrow to one of: service | dev_dep | skill. Default returns just services. " +
-			"USE BEFORE writing code that talks to a cluster service so you know the canonical env vars to read.",
+		Description: "List services the current cluster offers (postgres, redis, mysql, mongodb, s3, smtp, stripe, openai, anthropic, clickhouse, http-api, plus operator-defined). " +
+			"Each entry's `extra.env_vars` lists the env var names that will be stamped into the sandbox when the service is bound — read those in your code. " +
+			"USE BEFORE writing code that talks to an external service so you know the canonical env var names and what fields the user has to supply.",
 	}, serviceList(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "service_bind",
@@ -213,12 +212,12 @@ type sandboxIDArgs struct {
 }
 
 type serviceListArgs struct {
-	Kind string `json:"kind,omitempty" jsonschema:"narrow to one kind: service | dev_dep | skill. Default returns just services."`
+	Kind string `json:"kind,omitempty" jsonschema:"optional filter: service | skill. Default returns services."`
 }
 
 type serviceBindArgs struct {
 	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox to wire the service into"`
-	Service   string `json:"service" jsonschema:"service name from the catalog (e.g. trino, spark)"`
+	Service   string `json:"service" jsonschema:"service name from the catalog (e.g. postgres, redis, openai)"`
 	Version   string `json:"version,omitempty" jsonschema:"optional version pin; default = latest in catalog"`
 }
 

@@ -60,8 +60,12 @@ func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 	srv := httptest.NewServer(p.Handler())
 	defer srv.Close()
 
-	// Drive the bind.
-	body, _ := json.Marshal(BindingRequest{Service: "trino"})
+	// Drive the bind with user-supplied env (external-only model).
+	suppliedEnv := map[string]string{
+		"DATABASE_URL": "postgresql://user:pass@db.example.com:5432/app",
+		"POSTGRES_URL": "postgresql://user:pass@db.example.com:5432/app",
+	}
+	body, _ := json.Marshal(BindingRequest{Service: "postgres", Env: suppliedEnv})
 	resp, err := http.Post(srv.URL+"/api/sandboxes/sb1/bindings", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -76,10 +80,7 @@ func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{
-		"TRINO_URL": true, "TRINO_USER": true,
-		"TRINO_PASSWORD": true, "TRINO_CATALOG": true,
-	}
+	want := map[string]bool{"DATABASE_URL": true, "POSTGRES_URL": true}
 	got := map[string]bool{}
 	for _, v := range br.EnvVars {
 		got[v] = true
@@ -90,21 +91,19 @@ func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 		}
 	}
 
-	// 4 env vars → 4 file_writes.
+	// 2 env vars → 2 file_writes.
 	seen := map[string]string{}
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		w := <-writeChan
 		seen[w.File] = w.Content
 	}
-	for k := range want {
-		path := "/var/run/xdp/trino/" + k
-		if _, ok := seen[path]; !ok {
+	for k, expected := range suppliedEnv {
+		path := "/var/run/xdp/postgres/" + k
+		if val, ok := seen[path]; !ok {
 			t.Errorf("runtime never received write for %q; saw %v", path, keys(seen))
+		} else if val != expected {
+			t.Errorf("write for %q got %q; want %q", path, val, expected)
 		}
-	}
-	// Spot-check values are non-empty stubs.
-	if !strings.HasPrefix(seen["/var/run/xdp/trino/TRINO_USER"], "dev-") {
-		t.Errorf("TRINO_USER stub looks wrong: %q", seen["/var/run/xdp/trino/TRINO_USER"])
 	}
 }
 

@@ -1,0 +1,28 @@
+name: redis
+display_name: Redis
+category: cache
+description: |
+  In-memory key/value store. Sessions, rate limits, queues, caching,
+  pub/sub. Connect to Upstash, Redis Cloud, ElastiCache, or any Redis-
+  compatible host.
+
+fields:
+  - name: url
+    label: Connection URL
+    placeholder: redis://default:pass@host:6379
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^rediss?://.+$
+
+inject:
+  env:
+    REDIS_URL: "{url}"
+  creds:
+    /etc/sandbox/creds/redis/url: "{url}"
+
+get_started: |
+  Free Redis for dev:
+  - **Upstash** https://upstash.com (10k commands/day, free)
+  - **Redis Cloud** https://redis.com (30 MB free)
+  - Self-hosted: `docker run -d -p 6379:6379 redis:7`

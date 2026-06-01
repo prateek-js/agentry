@@ -1,0 +1,42 @@
+name: stripe
+display_name: Stripe
+category: payments
+description: |
+  Payments + subscriptions. Provide secret key and (optionally) the
+  webhook signing secret. Test keys (sk_test_*) are fine for dev; prod
+  requires sk_live_*.
+
+fields:
+  - name: secret_key
+    label: Secret Key
+    placeholder: sk_test_... or sk_live_...
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^sk_(test|live)_.+$
+  - name: webhook_secret
+    label: Webhook Signing Secret
+    placeholder: whsec_...
+    secret: true
+    required: false
+    prod_required: true
+  - name: publishable_key
+    label: Publishable Key
+    placeholder: pk_test_... or pk_live_...
+    required: false
+
+inject:
+  env:
+    STRIPE_SECRET_KEY: "{secret_key}"
+    STRIPE_WEBHOOK_SECRET: "{webhook_secret}"
+    STRIPE_PUBLISHABLE_KEY: "{publishable_key}"
+  creds:
+    /etc/sandbox/creds/stripe/keys: |
+      secret={secret_key}
+      webhook={webhook_secret}
+      publishable={publishable_key}
+
+get_started: |
+  Get keys at https://dashboard.stripe.com/apikeys. Test mode (sk_test_*)
+  is free and supports the full API surface; only real charges need live
+  mode.

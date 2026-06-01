@@ -26,27 +26,21 @@ type Lockfile struct {
 	Cluster  string          `json:"cluster"`
 	Bindings []LockedBinding `json:"bindings,omitempty"`
 	Secrets  []string        `json:"secrets,omitempty"`
-	DevDeps  []LockedDevDep  `json:"dev_deps,omitempty"`
 	Skills   []LockedSkill   `json:"skills,omitempty"`
 }
 
-// LockedBinding is one bound cluster service.
+// LockedBinding is one bound cluster service. Env values are NOT
+// stored (those live in /var/run/xdp/<service>/<key> inside the
+// sandbox); only env var names are recorded so the deploy side knows
+// what contract to re-bind against.
 type LockedBinding struct {
-	Service    string `json:"service"`
-	Version    string `json:"version"`
+	Service    string   `json:"service"`
+	Version    string   `json:"version"`
 	EnvVars    []string `json:"env_vars,omitempty"`
-	ResolvedAt string `json:"resolved_at"`
+	ResolvedAt string   `json:"resolved_at"`
 }
 
-// LockedDevDep is one running dev-dep (postgres, redis, …).
-type LockedDevDep struct {
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	Provides   string `json:"provides"`
-	ResolvedAt string `json:"resolved_at"`
-}
-
-// LockedSkill is a pulled skill version (Phase 18).
+// LockedSkill is a pulled skill version.
 type LockedSkill struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`

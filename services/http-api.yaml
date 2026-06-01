@@ -1,0 +1,53 @@
+name: http-api
+display_name: HTTP API (generic)
+category: other
+description: |
+  Catch-all for any HTTP API the user wants to wire — internal services,
+  third-party SaaS we don't have a dedicated manifest for, custom
+  webhook endpoints. Configurable env var name lets you bind multiple
+  HTTP APIs to the same sandbox without name collisions.
+
+fields:
+  - name: env_prefix
+    label: Env var prefix (e.g. "INTERNAL_API" → INTERNAL_API_URL + INTERNAL_API_TOKEN)
+    placeholder: INTERNAL_API
+    required: true
+    pattern: ^[A-Z][A-Z0-9_]*$
+  - name: url
+    label: Base URL
+    placeholder: https://api.example.com
+    required: true
+  - name: token
+    label: "Auth token (sent as Authorization: Bearer <token> — blank if none)"
+    secret: true
+    required: false
+    prod_required: true
+  - name: header_name
+    label: Auth header name (default Authorization)
+    default: Authorization
+    required: false
+  - name: header_value_template
+    label: Auth header value template (default "Bearer {token}")
+    default: "Bearer {token}"
+    required: false
+
+inject:
+  env:
+    "{env_prefix}_URL": "{url}"
+    "{env_prefix}_TOKEN": "{token}"
+    "{env_prefix}_HEADER_NAME": "{header_name}"
+    "{env_prefix}_HEADER_VALUE": "{header_value_template}"
+  creds:
+    "/etc/sandbox/creds/{env_prefix}/config": |
+      url={url}
+      token={token}
+      header_name={header_name}
+      header_value={header_value_template}
+
+get_started: |
+  Use this for any service we don't have a first-class manifest for.
+  Pick a unique env_prefix per service (INTERNAL_API, ANALYTICS_API,
+  CRM_API, ...) so multiple bindings don't clash.
+
+  Need a dedicated manifest? Drop a yaml in `/etc/agentry/services/`
+  on your cluster (see /etc/agentry/services/README.md for the format).

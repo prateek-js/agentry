@@ -1,0 +1,33 @@
+name: anthropic
+display_name: Anthropic Claude API
+category: ai
+description: |
+  Claude API access. Inject as ANTHROPIC_API_KEY — what the anthropic
+  Python/TS SDK reads by default. Pin a model name if you want
+  reproducible builds (recommended).
+
+fields:
+  - name: api_key
+    label: API Key
+    placeholder: sk-ant-api03-...
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^sk-ant-.+$
+  - name: model
+    label: Default model
+    default: claude-sonnet-4-5
+    required: false
+
+inject:
+  env:
+    ANTHROPIC_API_KEY: "{api_key}"
+    ANTHROPIC_MODEL: "{model}"
+  creds:
+    /etc/sandbox/creds/anthropic/key: "{api_key}"
+
+get_started: |
+  Get an API key at https://console.anthropic.com/settings/keys.
+
+  Free $5 in credits on new accounts. Pricing tiers depend on usage
+  volume (see https://www.anthropic.com/pricing).

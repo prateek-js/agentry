@@ -1,0 +1,30 @@
+name: postgres
+display_name: PostgreSQL
+category: database
+description: |
+  Relational database. The default for web apps, AI/RAG (with pgvector),
+  and anything that needs ACID transactions. Connect to Supabase, Neon,
+  RDS, Render, or any other postgres-compatible host.
+
+fields:
+  - name: url
+    label: Connection URL
+    placeholder: postgresql://user:pass@host:5432/db
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^postgres(ql)?://.+$
+
+inject:
+  env:
+    DATABASE_URL: "{url}"
+    POSTGRES_URL: "{url}"
+  creds:
+    /etc/sandbox/creds/postgres/url: "{url}"
+
+get_started: |
+  Free postgres for dev:
+  - **Supabase** https://supabase.com (500 MB free, includes pgvector)
+  - **Neon** https://neon.tech (3 GB free, branching)
+  - **Render** https://render.com (free dev DB)
+  - Self-hosted: `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:16`

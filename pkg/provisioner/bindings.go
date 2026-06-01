@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/agentry/agentry/pkg/errcode"
 )
@@ -79,13 +77,10 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 		}
 		creds = req.Env
 	} else {
-		// Stub-mint path (LLM-driven service_bind MCP call). If the
-		// service is ALREADY bound for this sandbox — typically by
-		// xdp stdio's PostCreateHook applying a cluster-default with
-		// real creds — return the existing env var contract without
-		// overwriting. This keeps the LLM's "did you bind?" probe
-		// idempotent and stops it from clobbering real values with
-		// stubs after a cluster default has landed.
+		// Idempotent re-bind: if the service is already bound for this
+		// sandbox, return the existing env-var contract without
+		// touching anything. Common when xdp stdio's PostCreateHook
+		// applied a cluster-default before the user ran service_add.
 		if existing := p.findExistingBinding(r.Context(), id, req.Service); existing != nil {
 			writeJSON(w, 200, BindingResponse{
 				Service: req.Service,
@@ -94,13 +89,13 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
-		var err error
-		creds, expiresAt, err = p.mintDevBinding(r.Context(), id, req.Service)
-		if err != nil {
-			errcode.WriteJSON(w, errcode.New(errcode.BindingMintFailed,
-				"mint creds for %s: %v", req.Service, err))
-			return
-		}
+		// External-only model: every bind must carry user-supplied
+		// credentials. There's no stub-mint path because there are no
+		// managed sibling services — the user (or operator default)
+		// always provides the connection details.
+		errcode.WriteJSON(w, errcode.New(errcode.BindingInvalidRequest,
+			"env is required for service %q — pass field values as env map", req.Service))
+		return
 	}
 
 	if err := p.writeBindingFiles(r.Context(), id, req.Service, creds); err != nil {
@@ -128,32 +123,6 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 		EnvVars:   envVars,
 		ExpiresAt: expiresAt,
 	})
-}
-
-// mintDevBinding returns canned dev credentials for a known service.
-// This is the stub — production swaps in an HTTP call to XDP's real
-// dev-bind API and propagates the user identity from the request.
-//
-// Each service has a hand-crafted env-var contract that matches the
-// catalog's documented env_vars list. Skills point the LLM at those
-// canonical names.
-func (p *Provisioner) mintDevBinding(_ context.Context, sandboxID, service string) (map[string]string, string, error) {
-	expires := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	switch service {
-	case "trino":
-		return map[string]string{
-			"TRINO_URL":      "https://trino-dev.us-west.acceldata.invalid:443",
-			"TRINO_USER":     "dev-" + truncatePrefix(sandboxID, 12),
-			"TRINO_PASSWORD": "stub-" + truncatePrefix(sandboxID, 16),
-			"TRINO_CATALOG":  "hive",
-		}, expires, nil
-	case "spark":
-		return map[string]string{
-			"SPARK_MASTER":      "spark://spark-dev.us-west.acceldata.invalid:7077",
-			"SPARK_HISTORY_URL": "https://spark-history-dev.us-west.acceldata.invalid",
-		}, expires, nil
-	}
-	return nil, "", fmt.Errorf("no dev-bind stub for service %q", service)
 }
 
 // writeBindingFiles writes each env var as a single-line file at
@@ -219,9 +188,3 @@ func validateBindingEnv(entry *CatalogEntry, env map[string]string) error {
 	return nil
 }
 
-func truncatePrefix(s string, n int) string {
-	if len(s) <= n {
-		return strings.ReplaceAll(s, "-", "")
-	}
-	return strings.ReplaceAll(s[:n], "-", "")
-}

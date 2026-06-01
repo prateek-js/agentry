@@ -1,0 +1,49 @@
+name: smtp
+display_name: SMTP (Email)
+category: email
+description: |
+  Generic SMTP credentials for sending transactional email. Works with
+  Mailgun, SendGrid, Postmark, Resend, AWS SES, or any SMTP relay.
+
+fields:
+  - name: host
+    label: SMTP Host
+    placeholder: smtp.mailgun.org
+    required: true
+  - name: port
+    label: Port
+    default: "587"
+    required: true
+  - name: username
+    label: Username
+    required: true
+  - name: password
+    label: Password
+    secret: true
+    required: true
+    prod_required: true
+  - name: from_address
+    label: Default From address
+    placeholder: noreply@example.com
+    required: true
+
+inject:
+  env:
+    SMTP_HOST: "{host}"
+    SMTP_PORT: "{port}"
+    SMTP_USER: "{username}"
+    SMTP_PASSWORD: "{password}"
+    SMTP_FROM: "{from_address}"
+  creds:
+    /etc/sandbox/creds/smtp/config: |
+      host={host}
+      port={port}
+      user={username}
+      pass={password}
+      from={from_address}
+
+get_started: |
+  Free SMTP for dev:
+  - **Resend** https://resend.com (3k emails/month free)
+  - **Mailgun** https://mailgun.com (5k emails/month free)
+  - **Postmark** https://postmarkapp.com (100 test emails/month)
