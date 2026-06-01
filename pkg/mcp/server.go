@@ -117,8 +117,8 @@ ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucina
        then open http://localhost:<port>/ in their browser.
 
   Example: a Vite dev server on port 5173 in sandbox "sales-dashboard" → either
-  "open the sandbox in the dashboard and Publish port 5173" or "run `agentry
-  forward sales-dashboard:5173` and open http://localhost:5173/". Never construct
+  "open the sandbox in the dashboard and Publish port 5173" or "run: agentry
+  forward sales-dashboard:5173, then open http://localhost:5173/". Never construct
   URLs from bridge.invalid, sandbox_url, or any internal path — those don't
   resolve outside your tool calls.
 

@@ -154,14 +154,10 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 
 	// Handler dispatch:
 	//   - hostnames under deployDomain that have a registered route →
-	//     reverse-proxy through the cluster tunnel
+	//     org-mode auth gate, then reverse-proxy through the cluster tunnel
 	//   - hostnames under deployDomain with no route → static placeholder
 	//   - everything else (bridge.agentry.run) → existing mTLS-gated
 	//     broker handler
-	//
-	// Clerk cookie middleware on deploy traffic lands in the next
-	// slice; today we serve the proxy unauthenticated to smoke the
-	// path end-to-end.
 	mainHandler := mtlsGate(b.Handler())
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain) {
@@ -169,11 +165,15 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 			if i := strings.Index(host, ":"); i > 0 {
 				host = host[:i]
 			}
-			if _, ok := deployReg.Lookup(host); ok {
-				b.HandleDeployment(w, r)
+			route, ok := deployReg.Lookup(host)
+			if !ok {
+				deploymentPlaceholder(w, r, env.deployDomain)
 				return
 			}
-			deploymentPlaceholder(w, r, env.deployDomain)
+			if !checkDeployAuth(w, r, route, env.deployAuthSecret, env.appURL) {
+				return // checkDeployAuth wrote the response (redirect or 4xx)
+			}
+			b.HandleDeployment(w, r)
 			return
 		}
 		mainHandler.ServeHTTP(w, r)
@@ -337,6 +337,13 @@ type envConfig struct {
 	deployDomain      string
 	deployCertCacheDir string
 	cfAPIToken        string
+
+	// Org-mode deploy auth. Bridge enforces "you must be signed into
+	// the route's org" by bouncing browser traffic to a handoff
+	// endpoint on appURL, which mints HMAC-signed tokens with this
+	// secret. Both knobs unset = org-mode routes 503 (fail closed).
+	deployAuthSecret []byte
+	appURL           string
 }
 
 func loadEnv() envConfig {
@@ -351,6 +358,17 @@ func loadEnv() envConfig {
 		deployDomain:       os.Getenv("DEPLOY_DOMAIN"),
 		deployCertCacheDir: os.Getenv("DEPLOY_CERT_CACHE_DIR"),
 		cfAPIToken:         os.Getenv("CF_API_TOKEN"),
+		appURL:             os.Getenv("APP_URL"),
+	}
+	if cfg.appURL == "" {
+		cfg.appURL = "https://app.agentry.run"
+	}
+	if hex := os.Getenv("AGENTRY_DEPLOY_HANDOFF_SECRET"); hex != "" {
+		secret, err := decodeHexSecret(hex)
+		if err != nil {
+			log.Fatalf("bridge: AGENTRY_DEPLOY_HANDOFF_SECRET parse: %v", err)
+		}
+		cfg.deployAuthSecret = secret
 	}
 	if cfg.deployCertCacheDir == "" {
 		cfg.deployCertCacheDir = "/var/lib/agentry-bridge/deploy-certs"
