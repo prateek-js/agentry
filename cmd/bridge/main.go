@@ -109,23 +109,58 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		Cache:      autocert.DirCache(env.tlsCacheDir),
 	}
 
+	// Optional: wildcard cert for *.<deployDomain> via Cloudflare DNS-01.
+	// Returns nil when CF_API_TOKEN isn't set; everything else here just
+	// degrades to "no deployment traffic accepted."
+	deployCerts := newDeployCertManager(env.cfAPIToken, env.deployCertCacheDir, env.deployDomain)
+	if deployCerts != nil && env.deployDomain != "" {
+		go func() {
+			if err := deployCerts.ensureWildcard(env.deployDomain); err != nil {
+				log.Printf("bridge: deploy wildcard cert provisioning failed: %v", err)
+			}
+		}()
+	}
+
 	caPool := x509.NewCertPool()
 	caPool.AddCert(caCert)
 
 	tlsConf := &tls.Config{
-		GetCertificate: mgr.GetCertificate,
+		// SNI dispatcher: deployment hostnames get the wildcard cert
+		// from certmagic; everything else (bridge.agentry.run) falls
+		// through to the existing HTTP-01 autocert manager.
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if env.deployDomain != "" && hostMatchesDeployDomain(hello.ServerName, env.deployDomain) {
+				return deployCerts.getCertificate(hello)
+			}
+			return mgr.GetCertificate(hello)
+		},
 		// VerifyClientCertIfGiven: TLS layer validates a cert if the
 		// client offers one. mtlsGate below enforces "you MUST offer
-		// one" on every non-exempt path.
+		// one" on every non-exempt path. Browser deployment traffic
+		// won't present a cert; that's fine here, the handler dispatch
+		// below picks the auth path by Host header.
 		ClientAuth: tls.VerifyClientCertIfGiven,
 		ClientCAs:  caPool,
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
 	}
 
+	// Handler dispatch: deployment traffic skips the mTLS gate; the
+	// auth story there is Clerk cookie verification (lands later in
+	// this batch). For now we serve a placeholder so the cert + DNS
+	// path can be smoke-tested end-to-end before plumbing the proxy.
+	mainHandler := mtlsGate(b.Handler())
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain) {
+			deploymentPlaceholder(w, r, env.deployDomain)
+			return
+		}
+		mainHandler.ServeHTTP(w, r)
+	})
+
 	httpsSrv := &http.Server{
 		Addr:              env.httpsListen,
-		Handler:           mtlsGate(b.Handler()),
+		Handler:           dispatcher,
 		TLSConfig:         tlsConf,
 		ReadHeaderTimeout: 30 * time.Second,
 		// No ReadTimeout/WriteTimeout — once handleTunnel hijacks, the
@@ -273,6 +308,14 @@ type envConfig struct {
 
 	caCertURL  string
 	caCertPath string
+
+	// Deployment ingress. When set, *.<deployDomain> traffic flows
+	// through the bridge with a wildcard cert provisioned via Cloudflare
+	// DNS-01. Without these the bridge keeps doing only its existing
+	// mTLS-gated work on tlsDomain.
+	deployDomain      string
+	deployCertCacheDir string
+	cfAPIToken        string
 }
 
 func loadEnv() envConfig {
@@ -282,8 +325,14 @@ func loadEnv() envConfig {
 		tlsCacheDir: os.Getenv("TLS_CACHE_DIR"),
 		httpsListen: os.Getenv("HTTPS_LISTEN"),
 		httpListen:  os.Getenv("HTTP_LISTEN"),
-		caCertURL:   os.Getenv("CA_CERT_URL"),
-		caCertPath:  os.Getenv("CA_CERT_PATH"),
+		caCertURL:          os.Getenv("CA_CERT_URL"),
+		caCertPath:         os.Getenv("CA_CERT_PATH"),
+		deployDomain:       os.Getenv("DEPLOY_DOMAIN"),
+		deployCertCacheDir: os.Getenv("DEPLOY_CERT_CACHE_DIR"),
+		cfAPIToken:         os.Getenv("CF_API_TOKEN"),
+	}
+	if cfg.deployCertCacheDir == "" {
+		cfg.deployCertCacheDir = "/var/lib/agentry-bridge/deploy-certs"
 	}
 	if cfg.httpsListen == "" {
 		cfg.httpsListen = ":443"
