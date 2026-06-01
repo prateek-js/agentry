@@ -78,6 +78,14 @@ func (d *DockerBackend) SetBuilderMode(on bool) {
 	d.builderMode = on
 }
 
+// Client exposes the underlying docker.Client so callers outside the
+// Backend interface (like the deploy build/run handlers) can invoke
+// daemon operations not modeled in the interface — ImageBuild for the
+// build pipeline, ContainerCreate/Start for the cluster target. The
+// type assertion in the provisioner stays local; we don't widen the
+// Backend interface for things only docker can do.
+func (d *DockerBackend) Client() *client.Client { return d.cli }
+
 // SetDefaultShmBytes overrides the per-container /dev/shm size. Call once at
 // startup, before any sandbox is created. Pass 0 to revert to Docker's default.
 func (d *DockerBackend) SetDefaultShmBytes(n int64) {

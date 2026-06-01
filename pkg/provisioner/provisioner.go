@@ -335,6 +335,15 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// without pushing to a registry; deploy uses them to construct
 	// the manifest sent to XDP.
 	mux.HandleFunc("POST /api/sandboxes/{id}/build", p.handleBuild)
+	mux.HandleFunc("POST /api/sandboxes/{id}/deploy-build", p.handleDeployBuild)
+
+	// Deploy runtime (cluster target). A built image becomes a long-
+	// lived container managed by these endpoints, addressable through
+	// the bridge via the deployment proxy below.
+	mux.HandleFunc("POST /api/deployments", p.handleDeploymentRun)
+	mux.HandleFunc("GET /api/deployments/{id}", p.handleDeploymentGet)
+	mux.HandleFunc("DELETE /api/deployments/{id}", p.handleDeploymentStop)
+	mux.HandleFunc("/api/deployments/{id}/proxy/{rest...}", p.handleDeploymentProxy)
 
 	// Deploy — calls build implicitly, posts the manifest to the
 	// broker's stub XDP deploy endpoint, returns the assigned
