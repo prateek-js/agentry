@@ -18,8 +18,10 @@ import (
 	"golang.org/x/term"
 )
 
-// cmdEnv dispatches the `xdp env *` subcommands. Set + unset stage
-// values into the sandbox via the provisioner; list reads them back.
+// cmdEnv dispatches the `agentry env *` subcommands. Set stages
+// values into the sandbox via the provisioner; ls reads back the
+// names. --sandbox defaults to whatever `agentry sandbox use` pinned
+// so the common case is a one-token command.
 //
 // Why this lives on the CLI and not the MCP layer: the value entered
 // here goes through a hidden prompt (term.ReadPassword) — secrets
@@ -27,31 +29,32 @@ import (
 // rejects secret-shaped values to enforce this.
 func cmdEnv(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "xdp env: need a subcommand (set|list|unset)")
+		fmt.Fprintln(os.Stderr, "agentry env: need a subcommand (set|ls)")
 		return 2
 	}
 	switch args[0] {
 	case "set":
 		return envSet(args[1:])
-	case "list":
+	case "ls", "list":
 		return envList(args[1:])
 	default:
-		return die("xdp env: unknown subcommand %q", args[0])
+		return die("agentry env: unknown subcommand %q", args[0])
 	}
 }
 
 func envSet(args []string) int {
-	fs := flag.NewFlagSet("xdp env set", flag.ContinueOnError)
-	sandbox := fs.String("sandbox", "", "target sandbox id (required)")
+	fs := flag.NewFlagSet("agentry env set", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (defaults to `agentry sandbox current`)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	rest := fs.Args()
 	if len(rest) < 1 {
-		return die("xdp env set --sandbox <id> NAME [VALUE]\n(omit VALUE to be prompted with hidden input)")
+		return die("agentry env set [--sandbox <id>] NAME [VALUE]\n(omit VALUE to be prompted with hidden input)")
 	}
-	if *sandbox == "" {
-		return die("--sandbox is required")
+	sb := resolveSandbox(*sandbox)
+	if sb == "" {
+		return die("no sandbox — pass --sandbox <id> or run `agentry sandbox use <id>` first")
 	}
 	name := rest[0]
 	var value string
@@ -68,18 +71,19 @@ func envSet(args []string) int {
 		value = v
 	}
 
-	return callProvisioner("POST", "/api/sandboxes/"+*sandbox+"/secrets",
+	return callProvisioner("POST", "/api/sandboxes/"+sb+"/secrets",
 		map[string]string{"name": name, "value": value, "source": "cli"})
 }
 
 func envList(args []string) int {
-	fs := flag.NewFlagSet("xdp env list", flag.ContinueOnError)
-	sandbox := fs.String("sandbox", "", "target sandbox id (required)")
+	fs := flag.NewFlagSet("agentry env ls", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (defaults to `agentry sandbox current`)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *sandbox == "" {
-		return die("--sandbox is required")
+	sb := resolveSandbox(*sandbox)
+	if sb == "" {
+		return die("no sandbox — pass --sandbox <id> or run `agentry sandbox use <id>` first")
 	}
 
 	cfg, _, err := LoadConfig()
@@ -94,7 +98,7 @@ func envList(args []string) int {
 	rt := &clusterStampedRT{next: tunnel.NewRoundTripper(sess), cluster: cfg.Cluster}
 	client := &http.Client{Transport: rt}
 
-	resp, err := client.Get("http://bridge.invalid/api/sandboxes/" + *sandbox + "/secrets")
+	resp, err := client.Get("http://bridge.invalid/api/sandboxes/" + sb + "/secrets")
 	if err != nil {
 		return die("get: %v", err)
 	}
@@ -133,7 +137,7 @@ func readHidden(label string) (string, error) {
 }
 
 // callProvisioner is the shared "build a tunneled HTTP request, send,
-// pretty-print the response" helper for xdp subcommands that
+// pretty-print the response" helper for agentry subcommands that
 // proxy to the provisioner. body may be nil for verbs without one.
 func callProvisioner(method, path string, body any) int {
 	cfg, _, err := LoadConfig()
@@ -187,7 +191,7 @@ func callProvisioner(method, path string, body any) int {
 }
 
 // openTunnel encapsulates the dial-broker boilerplate that several
-// xdp subcommands need. Returns the yamux session for the caller to
+// agentry subcommands need. Returns the yamux session for the caller to
 // build a RoundTripper on.
 //
 // When the config carries a device cert + key (prod mode), we present
@@ -196,10 +200,10 @@ func callProvisioner(method, path string, body any) int {
 // expired, or unknown to the broker, the dial fails at TLS time.
 func openTunnel(cfg *Config) (*yamux.Session, error) {
 	if cfg.BrokerURL == "" {
-		return nil, fmt.Errorf("config has no broker_url; run `xdp init`")
+		return nil, fmt.Errorf("config has no broker_url; run `agentry init`")
 	}
 	if cfg.Cluster == "" {
-		return nil, fmt.Errorf("no cluster set; run `xdp cluster use <name>`")
+		return nil, fmt.Errorf("no cluster set; run `agentry cluster use <name>`")
 	}
 	dial := tunnel.DialConfig{
 		BrokerURL: cfg.BrokerURL,

@@ -32,31 +32,49 @@ import (
 
 const usage = `agentry — laptop-side daemon + CLI for agentry.run
 
-Usage:
+Setup:
   agentry init --app-url URL --token TOK [--name NAME]
-  agentry cluster                          (interactive picker)
-  agentry cluster current
-  agentry cluster use <name>
-  agentry cluster ls
-  agentry stdio                            (MCP server bound to stdin/stdout)
-  agentry forward <sandbox>:<port> [--local PORT]
-  agentry env set --sandbox <id> NAME [VALUE]    (omit VALUE for hidden prompt)
-  agentry env list --sandbox <id>
-  agentry service list                            (catalog of cluster services)
-  agentry service bind <service>                  (cluster-default: stored locally, applied to every new sandbox)
-  agentry service bind <service> --from-env       (cluster-default, scripted)
-  agentry service bind --sandbox <id> <service>  (one-shot override for one sandbox)
-  agentry service binds                           (list cluster defaults stored on this laptop)
-  agentry service unbind <service>                (drop a cluster default)
   agentry status
-  agentry help
 
-Configuration lives in ~/.agentry/agentry.json. Run "agentry init" once
-on a new machine using the token from the dashboard, then "agentry
-cluster" to pick a target, then point Claude Desktop / Cursor / Roo
-at "agentry stdio" for the MCP integration. Use "agentry forward" to
-expose a port running inside a sandbox on a local port so you can
-hit it from your browser.
+Cluster (the box running your sandboxes):
+  agentry cluster                          interactive picker
+  agentry cluster ls
+  agentry cluster use <name>
+  agentry cluster current
+
+Sandbox (a container on the current cluster):
+  agentry sandbox ls
+  agentry sandbox use <id>                 pin <id> as default for env/forward
+  agentry sandbox current
+  agentry sandbox rm <id>
+
+MCP (the integration point for Claude Desktop / Cursor / Roo):
+  agentry mcp                              MCP server bound to stdin/stdout
+                                           (alias: agentry stdio)
+
+Port forwarding:
+  agentry forward [<sandbox>:]<port> [--local PORT]
+                                           sandbox defaults to current
+
+Sandbox env vars:
+  agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE: hidden prompt)
+  agentry env ls [--sandbox <id>]
+
+Service catalog (cluster-scoped):
+  agentry service ls
+  agentry service bind <service>           cluster default; applied on every create
+  agentry service bind <service> --from-env
+  agentry service bind --sandbox <id> <service>     one-shot override
+  agentry service binds                    list cluster defaults stored locally
+  agentry service unbind <service>
+
+Deployments (publish a sandbox port to a *.agentry.live URL):
+  agentry deployment ls
+  agentry deployment publish     (use the dashboard for now)
+
+Configuration: ~/.agentry/agentry.json. Pinned sandbox: ~/.agentry/state.json.
+Run "agentry init" once with the token from the dashboard, "agentry cluster"
+to pick a target, then point your editor at "agentry mcp".
 `
 
 func main() {
@@ -74,14 +92,28 @@ func main() {
 		os.Exit(cmdInit(os.Args[2:]))
 	case "cluster":
 		os.Exit(cmdCluster(os.Args[2:]))
-	case "stdio":
-		os.Exit(cmdStdio(os.Args[2:]))
+	case "sandbox":
+		os.Exit(cmdSandbox(os.Args[2:]))
+	case "mcp", "stdio":
+		// stdio is the legacy name kept as an alias so existing
+		// Claude Desktop / Roo configs keep working.
+		os.Exit(cmdMCP(os.Args[2:]))
 	case "forward":
 		os.Exit(cmdForward(os.Args[2:]))
 	case "env":
 		os.Exit(cmdEnv(os.Args[2:]))
+	case "deployment":
+		os.Exit(cmdDeployment(os.Args[2:]))
 	case "deploy":
-		os.Exit(cmdDeploy(os.Args[2:]))
+		// Legacy: the old `deploy` command hit the provisioner's
+		// XDP-stub deploy endpoint, which was tied to substrate that
+		// no longer exists. Redirect users to the new "publish a port"
+		// workflow under `agentry deployment` and exit non-zero so
+		// scripts notice.
+		fmt.Fprintln(os.Stderr,
+			"agentry deploy is gone — use `agentry deployment` for publishing\n"+
+				"a sandbox port to a *.agentry.live URL.")
+		os.Exit(2)
 	case "service":
 		os.Exit(cmdService(os.Args[2:]))
 	case "status":
@@ -90,29 +122,31 @@ func main() {
 		fmt.Fprint(os.Stdout, usage)
 		os.Exit(0)
 	default:
-		fmt.Fprintf(os.Stderr, "xdp: unknown subcommand %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "agentry: unknown subcommand %q\n\n", os.Args[1])
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
 }
 
-// cmdStdio is the workhorse: read config, dial broker, run the MCP
-// server bound to stdin/stdout with a tunneled HTTP client.
-func cmdStdio(_ []string) int {
+// cmdMCP is the workhorse: read config, dial broker, run the MCP
+// server bound to stdin/stdout with a tunneled HTTP client. The CLI
+// alias `agentry stdio` routes here so legacy editor configs (which
+// spawn "agentry stdio") keep working.
+func cmdMCP(_ []string) int {
 	cfg, path, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `xdp init` first; tried %s)", err, path)
+		return die("load config: %v (run `agentry init` first; tried %s)", err, path)
 	}
 	if cfg.BrokerURL == "" {
-		return die("config %s has no broker_url; run `xdp init --broker URL` first", path)
+		return die("config %s has no broker_url; run `agentry init` first", path)
 	}
 	if cfg.Cluster == "" {
-		return die("no current cluster; run `xdp cluster use <name>` first")
+		return die("no current cluster; run `agentry cluster use <name>` first")
 	}
 
 	ctx, cancel := signalContext()
 
-	log.Printf("xdp: dialing broker %s as device=%s, cluster=%s",
+	log.Printf("agentry: dialing broker %s as device=%s, cluster=%s",
 		cfg.BrokerURL, cfg.DeviceID, cfg.Cluster)
 	dial := tunnel.DialConfig{
 		BrokerURL: cfg.BrokerURL,
@@ -188,16 +222,18 @@ func cmdStdio(_ []string) int {
 
 // cmdStatus prints what the daemon would do if started. Does NOT dial
 // the broker — it's a config-readback only, useful for "is my install
-// healthy" before `xdp stdio` runs.
+// healthy" before `agentry mcp` runs.
 func cmdStatus(_ []string) int {
 	cfg, path, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `xdp init` first; tried %s)", err, path)
+		return die("load config: %v (run `agentry init` first; tried %s)", err, path)
 	}
+	state := LoadState()
 	fmt.Printf("config:   %s\n", path)
 	fmt.Printf("device:   %s\n", cfg.DeviceID)
-	fmt.Printf("broker:   %s\n", emptyAs(cfg.BrokerURL, "(not set; run `xdp init --broker URL`)"))
-	fmt.Printf("cluster:  %s\n", emptyAs(cfg.Cluster, "(not set; run `xdp cluster use <name>`)"))
+	fmt.Printf("broker:   %s\n", emptyAs(cfg.BrokerURL, "(not set; run `agentry init`)"))
+	fmt.Printf("cluster:  %s\n", emptyAs(cfg.Cluster, "(not set; run `agentry cluster`)"))
+	fmt.Printf("sandbox:  %s\n", emptyAs(state.CurrentSandbox, "(not pinned; run `agentry sandbox use <id>`)"))
 	return 0
 }
 
@@ -223,7 +259,7 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 func die(format string, args ...any) int {
-	fmt.Fprintf(os.Stderr, "xdp: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "agentry: "+format+"\n", args...)
 	return 1
 }
 
@@ -264,7 +300,7 @@ func reconnectLoop(ctx context.Context, initial tunnelSession, rt *tunnel.RoundT
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("xdp: tunnel session closed; reconnecting")
+		log.Printf("agentry: tunnel session closed; reconnecting")
 
 		backoff := tunnel.NewBackoff(tunnel.DialerBackoff())
 		for {
@@ -273,13 +309,13 @@ func reconnectLoop(ctx context.Context, initial tunnelSession, rt *tunnel.RoundT
 			}
 			sess, err := tunnel.Dial(ctx, dial)
 			if err == nil {
-				log.Printf("xdp: tunnel reconnected")
+				log.Printf("agentry: tunnel reconnected")
 				rt.SetSession(sess)
 				current = sess
 				break
 			}
 			delay := backoff.Next()
-			log.Printf("xdp: reconnect attempt %d failed: %v (retry in %s)",
+			log.Printf("agentry: reconnect attempt %d failed: %v (retry in %s)",
 				backoff.Attempts(), err, delay)
 			select {
 			case <-ctx.Done():

@@ -15,42 +15,42 @@ import (
 	"golang.org/x/term"
 )
 
-// cmdService dispatches `xdp service *` subcommands.
+// cmdService dispatches `agentry service *` subcommands.
 //
-//	xdp service list                            (catalog)
-//	xdp service bind <service>                  (cluster-default: stored locally)
-//	xdp service bind --sandbox <id> <service>   (one-shot override)
-//	xdp service binds                           (list stored cluster defaults)
-//	xdp service unbind <service>                (drop a stored default)
+//	agentry service list                            (catalog)
+//	agentry service bind <service>                  (cluster-default: stored locally)
+//	agentry service bind --sandbox <id> <service>   (one-shot override)
+//	agentry service binds                           (list stored cluster defaults)
+//	agentry service unbind <service>                (drop a stored default)
 func cmdService(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "xdp service: need a subcommand (list|bind|binds|unbind)")
+		fmt.Fprintln(os.Stderr, "agentry service: need a subcommand (ls|bind|binds|unbind)")
 		return 2
 	}
 	switch args[0] {
 	case "bind":
 		return serviceBindCLI(args[1:])
-	case "list":
+	case "ls", "list":
 		return serviceListCLI(args[1:])
 	case "binds":
 		return serviceBindsListCLI(args[1:])
 	case "unbind":
 		return serviceUnbindCLI(args[1:])
 	default:
-		return die("xdp service: unknown subcommand %q", args[0])
+		return die("agentry service: unknown subcommand %q", args[0])
 	}
 }
 
 // serviceBindCLI is the interactive binding path. Two modes:
 //
-//	xdp service bind <service>                  (cluster default — stored on disk)
-//	xdp service bind --sandbox <id> <service>   (one-shot — POSTed now, not stored)
+//	agentry service bind <service>                  (cluster default — stored on disk)
+//	agentry service bind --sandbox <id> <service>   (one-shot — POSTed now, not stored)
 //
 // In both modes the catalog teaches us which env vars to prompt for.
 // --from-env reads them from the current shell instead of prompting,
 // useful for CI / scripting.
 func serviceBindCLI(args []string) int {
-	fs := flag.NewFlagSet("xdp service bind", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentry service bind", flag.ContinueOnError)
 	sandbox := fs.String("sandbox", "", "one-shot bind: target this sandbox only (omit to store as cluster default)")
 	fromEnv := fs.Bool("from-env", false, "read values from the current shell env instead of prompting")
 	flagArgs, posArgs := splitFlagsAndPositionals(args)
@@ -58,7 +58,7 @@ func serviceBindCLI(args []string) int {
 		return 2
 	}
 	if len(posArgs) != 1 {
-		return die("xdp service bind [--sandbox <id>] <service> [--from-env]")
+		return die("agentry service bind [--sandbox <id>] <service> [--from-env]")
 	}
 	service := posArgs[0]
 
@@ -68,7 +68,7 @@ func serviceBindCLI(args []string) int {
 		return die("fetch catalog: %v", err)
 	}
 	if entry == nil {
-		return die("service %q not in cluster catalog (try `xdp service list`)", service)
+		return die("service %q not in cluster catalog (try `agentry service list`)", service)
 	}
 	envVars, _ := entry["env_vars"].([]any)
 	if len(envVars) == 0 {
@@ -114,19 +114,19 @@ func serviceBindCLI(args []string) int {
 		if version != "" {
 			body["version"] = version
 		}
-		fmt.Printf("xdp service bind: sandbox=%s service=%s (%d vars, one-shot)\n",
+		fmt.Printf("agentry service bind: sandbox=%s service=%s (%d vars, one-shot)\n",
 			*sandbox, service, len(values))
 		return callProvisioner("POST", "/api/sandboxes/"+*sandbox+"/bindings", body)
 	}
 
 	// Cluster-default mode: persist locally; auto-applies on every
-	// future sandbox_create driven by `xdp stdio`.
+	// future sandbox_create driven by `agentry stdio`.
 	cfg, _, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `xdp cluster use <name>` first")
+		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
 	if err := saveBind(cfg.Cluster, &StoredBind{
 		Service: service,
@@ -135,7 +135,7 @@ func serviceBindCLI(args []string) int {
 	}); err != nil {
 		return die("save bind: %v", err)
 	}
-	fmt.Printf("xdp service bind: cluster=%s service=%s (%d vars, stored)\n",
+	fmt.Printf("agentry service bind: cluster=%s service=%s (%d vars, stored)\n",
 		cfg.Cluster, service, len(values))
 	fmt.Fprintln(os.Stderr, "  applied automatically to every new sandbox in this cluster.")
 	return 0
@@ -150,7 +150,7 @@ func serviceBindsListCLI(_ []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `xdp cluster use <name>` first")
+		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
 	binds, err := listBinds(cfg.Cluster)
 	if err != nil {
@@ -158,7 +158,7 @@ func serviceBindsListCLI(_ []string) int {
 	}
 	if len(binds) == 0 {
 		fmt.Printf("(no cluster defaults stored for %s)\n", cfg.Cluster)
-		fmt.Fprintln(os.Stderr, "  run `xdp service bind <service>` to stage one.")
+		fmt.Fprintln(os.Stderr, "  run `agentry service bind <service>` to stage one.")
 		return 0
 	}
 	fmt.Printf("cluster=%s, stored at %s\n\n", cfg.Cluster, bindsDir(cfg.Cluster))
@@ -178,19 +178,19 @@ func serviceBindsListCLI(_ []string) int {
 // local already); only future creates skip this service.
 func serviceUnbindCLI(args []string) int {
 	if len(args) != 1 {
-		return die("xdp service unbind <service>")
+		return die("agentry service unbind <service>")
 	}
 	cfg, _, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `xdp cluster use <name>` first")
+		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
 	if err := deleteBind(cfg.Cluster, args[0]); err != nil {
 		return die("delete: %v", err)
 	}
-	fmt.Printf("xdp service unbind: cluster=%s service=%s removed\n", cfg.Cluster, args[0])
+	fmt.Printf("agentry service unbind: cluster=%s service=%s removed\n", cfg.Cluster, args[0])
 	return 0
 }
 
@@ -319,7 +319,7 @@ func warnedNonTTYOnce() {
 		return
 	}
 	warnedNonTTY = true
-	fmt.Fprintln(os.Stderr, "\nxdp: stdin is not a TTY — hidden prompts disabled (input WILL be visible).")
+	fmt.Fprintln(os.Stderr, "\nagentry: stdin is not a TTY — hidden prompts disabled (input WILL be visible).")
 	fmt.Fprintln(os.Stderr, "     for sensitive values, run interactively or use --from-env / --from-file.")
 }
 

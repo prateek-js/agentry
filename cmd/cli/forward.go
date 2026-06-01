@@ -17,10 +17,13 @@ import (
 )
 
 // cmdForward binds a local TCP port and pipes every accepted
-// connection through the broker tunnel to a port inside the named
-// sandbox.
+// connection through the broker tunnel to a port inside a sandbox.
 //
-//	xdp forward <sandbox>:<port> [--local PORT]
+//	agentry forward [<sandbox>:]<port> [--local PORT]
+//
+// If the argument is just `<port>`, the sandbox defaults to whatever
+// `agentry sandbox use` pinned. So once you've picked a sandbox the
+// common case is `agentry forward 5432`.
 //
 // Raw TCP, no HTTP. Every accepted local conn opens one yamux stream
 // on the device session, writes "CONNECT <sandbox>:<port>" + the
@@ -30,19 +33,32 @@ import (
 // do psql, redis-cli, ssh, mongo, mysql, debugger attach, anything
 // else that opens a TCP socket. The tunnel doesn't parse the bytes.
 func cmdForward(args []string) int {
-	fs := flag.NewFlagSet("xdp forward", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentry forward", flag.ContinueOnError)
 	localPortFlag := fs.Int("local", -1, "local TCP port (default = remote port; 0 = OS-assigned)")
 	flagArgs, posArgs := splitFlagsAndPositionals(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
 	if len(posArgs) != 1 {
-		return die("xdp forward <sandbox>:<port> [--local PORT]")
+		return die("agentry forward [<sandbox>:]<port> [--local PORT]")
 	}
 
-	sandbox, portStr, ok := strings.Cut(posArgs[0], ":")
-	if !ok || sandbox == "" || portStr == "" {
-		return die("expected sandbox:port, got %q", posArgs[0])
+	// Two shapes:
+	//   "sb:4321" -> explicit sandbox
+	//   "4321"    -> pinned sandbox from state.json
+	var sandbox, portStr string
+	if i := strings.Index(posArgs[0], ":"); i >= 0 {
+		sandbox = posArgs[0][:i]
+		portStr = posArgs[0][i+1:]
+	} else {
+		sandbox = resolveSandbox("")
+		portStr = posArgs[0]
+	}
+	if sandbox == "" {
+		return die("no sandbox — pass <sandbox>:<port> or run `agentry sandbox use <id>` first")
+	}
+	if portStr == "" {
+		return die("port missing")
 	}
 	remotePort, err := strconv.Atoi(portStr)
 	if err != nil || remotePort < 1 || remotePort > 65535 {
@@ -58,13 +74,13 @@ func cmdForward(args []string) int {
 
 	cfg, _, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `xdp init` first)", err)
+		return die("load config: %v (run `agentry init` first)", err)
 	}
 	if cfg.BrokerURL == "" {
-		return die("config has no broker_url; run `xdp init`")
+		return die("config has no broker_url; run `agentry init`")
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `xdp cluster`")
+		return die("no cluster set; run `agentry cluster`")
 	}
 
 	ctx, cancel := signalContext()
@@ -96,7 +112,7 @@ func cmdForward(args []string) int {
 	defer listener.Close()
 	actualLocal := listener.Addr().(*net.TCPAddr).Port
 
-	fmt.Printf("xdp forward: tcp://localhost:%d → sandbox %s, port %d (cluster=%s)\n",
+	fmt.Printf("agentry forward: tcp://localhost:%d → sandbox %s, port %d (cluster=%s)\n",
 		actualLocal, sandbox, remotePort, cfg.Cluster)
 	fmt.Println("press Ctrl+C to stop")
 
@@ -144,7 +160,7 @@ func handleForwardConn(ctx context.Context, conn net.Conn, sess *yamux.Session, 
 		// Broker / cluster / runtime rejected the CONNECT. Without
 		// HTTP semantics on the local side, the only signal we have
 		// is closing the conn. Log to stderr so the user sees why.
-		fmt.Fprintf(os.Stderr, "xdp forward: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentry forward: %v\n", err)
 		return
 	}
 	upstream := tunnel.NewDrainedReadWriteCloser(stream, br)
@@ -152,8 +168,8 @@ func handleForwardConn(ctx context.Context, conn net.Conn, sess *yamux.Session, 
 }
 
 // splitFlagsAndPositionals lets the user write either
-// "xdp forward sb:8000 --local 8000" or
-// "xdp forward --local 8000 sb:8000" — Go's stdlib flag parser stops
+// "agentry forward sb:8000 --local 8000" or
+// "agentry forward --local 8000 sb:8000" — Go's stdlib flag parser stops
 // at the first positional, so we pre-sort the args.
 func splitFlagsAndPositionals(args []string) (flags, positionals []string) {
 	for i := 0; i < len(args); i++ {

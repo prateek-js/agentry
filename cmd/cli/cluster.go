@@ -10,15 +10,15 @@ import (
 	"strings"
 )
 
-// cmdCluster handles `xdp cluster [subcommand]`. With no subcommand,
+// cmdCluster handles `agentry cluster [subcommand]`. With no subcommand,
 // queries the broker for the cluster list and shows an interactive
-// picker — that's the common case after `xdp init`. Explicit
+// picker — that's the common case after `agentry init`. Explicit
 // subcommands stay supported for scripted use.
 //
-//	xdp cluster              # interactive select
-//	xdp cluster current      # print current
-//	xdp cluster use <name>   # set without prompting
-//	xdp cluster ls           # print list, no prompt
+//	agentry cluster              # interactive select
+//	agentry cluster current      # print current
+//	agentry cluster use <name>   # set without prompting
+//	agentry cluster ls           # print list, no prompt
 func cmdCluster(args []string) int {
 	if len(args) == 0 {
 		return clusterPick()
@@ -28,13 +28,13 @@ func cmdCluster(args []string) int {
 		return clusterCurrent()
 	case "use":
 		if len(args) < 2 {
-			return die("xdp cluster use <name>")
+			return die("agentry cluster use <name>")
 		}
 		return clusterUse(args[1])
 	case "ls":
 		return clusterLs()
 	default:
-		return die("xdp cluster: unknown subcommand %q", args[0])
+		return die("agentry cluster: unknown subcommand %q", args[0])
 	}
 }
 
@@ -44,7 +44,7 @@ func cmdCluster(args []string) int {
 func clusterPick() int {
 	cfg, _, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `xdp init` first)", err)
+		return die("load config: %v (run `agentry init` first)", err)
 	}
 	list, err := fetchClusters(cfg)
 	if err != nil {
@@ -81,7 +81,7 @@ func clusterPick() int {
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
 	}
-	fmt.Printf("xdp: cluster set to %q\n", chosen)
+	fmt.Printf("agentry: cluster set to %q\n", chosen)
 	return 0
 }
 
@@ -91,7 +91,7 @@ func clusterCurrent() int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		fmt.Println("(no cluster set — run `xdp cluster` to pick one)")
+		fmt.Println("(no cluster set — run `agentry cluster` to pick one)")
 		return 0
 	}
 	fmt.Println(cfg.Cluster)
@@ -101,13 +101,13 @@ func clusterCurrent() int {
 func clusterUse(name string) int {
 	cfg, _, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `xdp init` first)", err)
+		return die("load config: %v (run `agentry init` first)", err)
 	}
 	cfg.Cluster = name
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
 	}
-	fmt.Printf("xdp: cluster set to %q\n", name)
+	fmt.Printf("agentry: cluster set to %q\n", name)
 	return 0
 }
 
@@ -145,7 +145,7 @@ type clusterInfo struct {
 
 func fetchClusters(cfg *Config) ([]clusterInfo, error) {
 	if cfg.BrokerURL == "" {
-		return nil, fmt.Errorf("config has no broker_url — run `xdp init`")
+		return nil, fmt.Errorf("config has no broker_url — run `agentry init`")
 	}
 	// Two auth modes, mutually exclusive:
 	//   - prod: client cert (DeviceCertPath set) → mTLS, no bearer

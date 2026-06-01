@@ -19,7 +19,7 @@ import (
 // Cluster-default service bindings live on the laptop, one JSON file
 // per service under ~/.ad-sandbox/services/<cluster>/<service>.json.
 //
-// When the LLM creates a new sandbox via `xdp stdio`, the post-create
+// When the LLM creates a new sandbox via `agentry stdio`, the post-create
 // hook walks this directory for the active cluster and POSTs each
 // stored binding to the sandbox. The result: every sandbox in a
 // cluster gets the user's saved Trino / Spark / … env vars without
@@ -28,7 +28,7 @@ import (
 // Real credentials never leave the laptop; only the provisioner's
 // /api/sandboxes/{id}/bindings endpoint sees them, over the tunneled
 // HTTP path that already terminates at the provisioner. Same trust
-// boundary as `xdp service bind --sandbox <id>`, just amortized.
+// boundary as `agentry service bind --sandbox <id>`, just amortized.
 
 // StoredBind is the on-disk shape for one cluster-default service.
 // Version is the catalog version captured at save time so build
@@ -46,7 +46,7 @@ func bindsDir(cluster string) string {
 	if cluster == "" {
 		return ""
 	}
-	// Sibling of xdp.json: derive from ConfigPath().
+	// Sibling of agentry.json: derive from ConfigPath().
 	base := filepath.Dir(ConfigPath())
 	return filepath.Join(base, "services", cluster)
 }
@@ -76,7 +76,7 @@ func loadBind(cluster, service string) (*StoredBind, error) {
 // parent dir with 0700.
 func saveBind(cluster string, b *StoredBind) error {
 	if cluster == "" {
-		return fmt.Errorf("cluster is empty; run `xdp cluster use <name>` first")
+		return fmt.Errorf("cluster is empty; run `agentry cluster use <name>` first")
 	}
 	if b == nil || b.Service == "" {
 		return fmt.Errorf("service is required")
@@ -111,7 +111,7 @@ func deleteBind(cluster, service string) error {
 	return err
 }
 
-// applyClusterDefaults returns the PostCreateHook used by `xdp stdio`.
+// applyClusterDefaults returns the PostCreateHook used by `agentry stdio`.
 // On every successful sandbox_create the hook reads stored binds for
 // the active cluster and POSTs each to /api/sandboxes/{id}/bindings
 // through the same tunneled HTTP client.
@@ -139,7 +139,7 @@ func applyClusterDefaults(cluster string, hc *http.Client) func(context.Context,
 				body["version"] = b.Version
 			}
 			if err := postBinding(ctx, hc, info.SandboxID, body); err != nil {
-				log.Printf("xdp: cluster-default bind %q → sandbox %s failed: %v",
+				log.Printf("agentry: cluster-default bind %q → sandbox %s failed: %v",
 					b.Service, info.SandboxID, err)
 				if firstErr == nil {
 					firstErr = err
@@ -149,7 +149,7 @@ func applyClusterDefaults(cluster string, hc *http.Client) func(context.Context,
 			applied++
 		}
 		if applied > 0 {
-			log.Printf("xdp: applied %d cluster-default bind(s) to sandbox %s",
+			log.Printf("agentry: applied %d cluster-default bind(s) to sandbox %s",
 				applied, info.SandboxID)
 		}
 		return firstErr
