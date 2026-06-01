@@ -10,8 +10,7 @@
 #     env                     ← key=value pairs sourced as-is
 #     aws/credentials         ← standard AWS creds file
 #     aws/config              ← standard AWS config file
-#     trino.json              ← caller convention; apps read directly
-#     xdp.json                ← caller convention; apps read directly
+#     <service>.json          ← caller convention; apps read directly
 #
 # Apps that need creds read the JSON files explicitly — the only thing
 # we auto-wire is the env file and the two AWS_*_FILE variables, both
@@ -35,38 +34,36 @@ fi
 
 unset _creds_dir
 
-# XDP service bindings + user-staged secrets are managed exclusively
-# by the provisioner (via `xdp service bind` and `xdp env set`) and
-# land under /var/run/xdp/. This directory is NEVER bind-mounted from
+# Service bindings + user-staged secrets are managed exclusively by
+# the provisioner (via `agentry service bind` and `agentry env set`) and
+# land under /var/run/agentry/. This directory is NEVER bind-mounted from
 # the host — the provisioner writes here via the runtime file_write
 # API, and only those values are sourced as env vars.
 #
-# The layout mirrors what XDP injects on a deployed pod, so dev and
-# prod see identical paths and identical env var names:
+# Layout (one subdir per bound service plus a `secrets` subdir for
+# user-staged values):
 #
-#   /var/run/xdp/
-#     trino/
-#       TRINO_URL          ← single-line file, value verbatim
-#       TRINO_USER
-#       TRINO_PASSWORD
-#     spark/
-#       SPARK_MASTER
+#   /var/run/agentry/
+#     postgres/
+#       DATABASE_URL       ← single-line file, value verbatim
+#     redis/
+#       REDIS_URL
 #     secrets/
-#       OPENAI_API_KEY     ← user-staged via `xdp env set`
+#       OPENAI_API_KEY     ← user-staged via `agentry env set`
 #
 # Conventional env var names per service are documented in the
 # catalog (GET /api/catalog) so the LLM reads the canonical names.
-_xdp_dir=/var/run/xdp
-if [ -d "$_xdp_dir" ]; then
-    for _xdp_sub in "$_xdp_dir"/*/; do
-        [ -d "$_xdp_sub" ] || continue
-        for _xdp_file in "$_xdp_sub"*; do
-            [ -r "$_xdp_file" ] || continue
-            _xdp_name=$(basename "$_xdp_file")
-            _xdp_value=$(cat "$_xdp_file")
-            export "$_xdp_name=$_xdp_value"
+_agentry_dir=/var/run/agentry
+if [ -d "$_agentry_dir" ]; then
+    for _agentry_sub in "$_agentry_dir"/*/; do
+        [ -d "$_agentry_sub" ] || continue
+        for _agentry_file in "$_agentry_sub"*; do
+            [ -r "$_agentry_file" ] || continue
+            _agentry_name=$(basename "$_agentry_file")
+            _agentry_value=$(cat "$_agentry_file")
+            export "$_agentry_name=$_agentry_value"
         done
     done
-    unset _xdp_sub _xdp_file _xdp_name _xdp_value
+    unset _agentry_sub _agentry_file _agentry_name _agentry_value
 fi
-unset _xdp_dir
+unset _agentry_dir

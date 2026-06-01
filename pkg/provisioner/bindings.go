@@ -12,7 +12,7 @@ import (
 // BindingRequest is the body for POST /api/sandboxes/{id}/bindings.
 //
 // If Env is non-empty, those values are used VERBATIM — caller (i.e.
-// the user, via `xdp service bind`) supplied them. When empty, the
+// the user, via `agentry service bind`) supplied them. When empty, the
 // provisioner falls back to the dev-mint stub (or, in production, a
 // call to the XDP control plane to mint dev-tier credentials).
 //
@@ -27,7 +27,7 @@ type BindingRequest struct {
 
 // BindingResponse documents which env var names the binding wired up.
 // The values themselves are NEVER in the response — they live as
-// files inside the sandbox at /var/run/xdp/<service>/<key> and
+// files inside the sandbox at /var/run/agentry/<service>/<key> and
 // surface as env vars via the shell shim.
 type BindingResponse struct {
 	Service   string   `json:"service"`
@@ -67,7 +67,7 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 	var creds map[string]string
 	var expiresAt string
 	if len(req.Env) > 0 {
-		// User-supplied creds (xdp service bind interactive path).
+		// User-supplied creds (agentry service bind interactive path).
 		// Validate the keys match the catalog's declared env_vars —
 		// keeps the LLM-readable contract honest and prevents typos
 		// like TRINOURL from sneaking through.
@@ -79,7 +79,7 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 	} else {
 		// Idempotent re-bind: if the service is already bound for this
 		// sandbox, return the existing env-var contract without
-		// touching anything. Common when xdp stdio's PostCreateHook
+		// touching anything. Common when agentry mcp's PostCreateHook
 		// applied a cluster-default before the user ran service_add.
 		if existing := p.findExistingBinding(r.Context(), id, req.Service); existing != nil {
 			writeJSON(w, 200, BindingResponse{
@@ -126,18 +126,18 @@ func (p *Provisioner) handleBindingCreate(w http.ResponseWriter, r *http.Request
 }
 
 // writeBindingFiles writes each env var as a single-line file at
-// /var/run/xdp/<service>/<env-var-name> inside the sandbox. The
-// shell shim sources every file under /var/run/xdp/<*>/ on shell
+// /var/run/agentry/<service>/<env-var-name> inside the sandbox. The
+// shell shim sources every file under /var/run/agentry/<*>/ on shell
 // start and exports them as env vars.
 //
-// Why /var/run/xdp and not /etc/sandbox/creds/xdp: /var/run is NOT
+// Why /var/run/agentry and not /etc/sandbox/creds/agentry: /var/run is NOT
 // bind-mounted from the host. Only the provisioner writes here, so
 // the binding pattern can't be subverted by host-side cred staging.
 // Matches the convention XDP uses for K8s Secret-as-Volume mounts
 // on the deploy side — same path in dev sandbox and prod pod.
 func (p *Provisioner) writeBindingFiles(ctx context.Context, sandboxID, service string, creds map[string]string) error {
 	for name, value := range creds {
-		filePath := fmt.Sprintf("/var/run/xdp/%s/%s", service, name)
+		filePath := fmt.Sprintf("/var/run/agentry/%s/%s", service, name)
 		if err := p.runtimeFileWrite(ctx, sandboxID, filePath, []byte(value)); err != nil {
 			return err
 		}

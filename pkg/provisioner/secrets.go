@@ -37,7 +37,7 @@ type SecretListResponse struct {
 
 // secretPatterns matches common shapes for things callers shouldn't
 // paste into an LLM tool. Used to reject MCP env::set calls that
-// look like real secrets — those have to go through `xdp env set`
+// look like real secrets — those have to go through `agentry env set`
 // on the user's terminal where the value never enters chat context.
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^sk-[A-Za-z0-9_-]{20,}$`),           // OpenAI-style
@@ -65,7 +65,7 @@ func LooksLikeSecret(v string) bool {
 }
 
 // handleSecretSet is POST /api/sandboxes/{id}/secrets. Writes the
-// value to /etc/sandbox/creds/xdp/secrets/<NAME> inside the sandbox.
+// value to /etc/sandbox/creds/agentry/secrets/<NAME> inside the sandbox.
 // The shell shim exports them under the same name on next shell
 // start. At deploy, they're declared in the manifest as `secrets:`.
 func (p *Provisioner) handleSecretSet(w http.ResponseWriter, r *http.Request) {
@@ -93,16 +93,16 @@ func (p *Provisioner) handleSecretSet(w http.ResponseWriter, r *http.Request) {
 		source = "cli"
 	}
 	// MCP-driven setters can't smuggle secrets — that's the whole
-	// point of the user-only `xdp env set` path. CLI source is
+	// point of the user-only `agentry env set` path. CLI source is
 	// trusted to have come from a human-entered prompt.
 	if source == "mcp" && LooksLikeSecret(req.Value) {
 		errcode.WriteJSON(w, errcode.New(errcode.SecretLooksLikeSecret,
-			"value looks like a secret (matches a well-known token pattern); set it via `xdp env set %s` in your terminal instead so it doesn't enter chat context",
+			"value looks like a secret (matches a well-known token pattern); set it via `agentry env set %s` in your terminal instead so it doesn't enter chat context",
 			req.Name))
 		return
 	}
 
-	filePath := "/var/run/xdp/secrets/" + req.Name
+	filePath := "/var/run/agentry/secrets/" + req.Name
 	if err := p.runtimeFileWrite(r.Context(), id, filePath, []byte(req.Value)); err != nil {
 		errcode.WriteJSON(w, errcode.New(errcode.BindingInternal,
 			"write secret into sandbox: %v", err))

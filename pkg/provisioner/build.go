@@ -163,7 +163,7 @@ func (p *Provisioner) generateDockerfile(ctx context.Context, sandboxID, project
 	if install != "" {
 		fmt.Fprintf(&b, "RUN %s\n", install)
 	}
-	b.WriteString("\n# xdp-entrypoint: sources /var/run/xdp/<service>/<env-var> files,\n")
+	b.WriteString("\n# xdp-entrypoint: sources /var/run/agentry/<service>/<env-var> files,\n")
 	b.WriteString("# exports them as env, then exec's the user's command. This is what\n")
 	b.WriteString("# makes the env contract identical between sandbox-dev and deployed pod.\n")
 	b.WriteString("COPY xdp-entrypoint /usr/local/bin/xdp-entrypoint\n")

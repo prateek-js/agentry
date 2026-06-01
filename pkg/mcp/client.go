@@ -30,8 +30,8 @@ type Client struct {
 	apiKey         string
 
 	// PostCreateHook, if set, runs after a successful sandbox_create.
-	// xdp stdio uses this to auto-apply cluster-default service binds
-	// the user staged with `xdp service bind <service>`. Returning an
+	// agentry mcp uses this to auto-apply cluster-default service binds
+	// the user staged with `agentry service bind <service>`. Returning an
 	// error logs but does NOT fail the create — partial wiring is
 	// better than no sandbox at all.
 	PostCreateHook func(ctx context.Context, info SandboxInfo) error
@@ -166,7 +166,7 @@ func (c *Client) BindService(ctx context.Context, sandboxID, service, version st
 
 // SetSecret calls POST /api/sandboxes/{id}/secrets. Source defaults
 // to "mcp" — the provisioner uses this to reject secret-shaped
-// values (forces them through `xdp env set` on the user's terminal).
+// values (forces them through `agentry env set` on the user's terminal).
 func (c *Client) SetSecret(ctx context.Context, sandboxID, name, value, source string) error {
 	if source == "" {
 		source = "mcp"

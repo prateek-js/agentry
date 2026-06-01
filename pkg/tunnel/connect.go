@@ -11,7 +11,7 @@ import (
 )
 
 // CONNECT is the data-plane verb. Every byte-forwarded TCP connection
-// (xdp forward, psql, redis-cli, ssh, debugger attach, anything that
+// (agentry forward, psql, redis-cli, ssh, debugger attach, anything that
 // dials a localhost:N inside a sandbox) rides an HTTP/1.1 CONNECT
 // request at every hop of the tunnel:
 //

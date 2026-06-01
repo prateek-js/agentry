@@ -168,7 +168,7 @@ func (m *BackgroundManager) Start(ctx context.Context, command, execDir string, 
 	id := m.newID()
 	cmdCtx, cancel := context.WithCancel(context.Background())
 	// Prepend the profile.d source loop so background commands see
-	// /var/run/xdp/<svc>/<KEY> as env vars (TRINO_URL, etc.) — same
+	// /var/run/agentry/<svc>/<KEY> as env vars (TRINO_URL, etc.) — same
 	// posture as command_run's session shells.
 	wrapped := "for _f in /etc/profile.d/*.sh; do [ -r \"$_f\" ] && . \"$_f\" >/dev/null 2>&1; done; unset _f\n" + command
 	cmd := exec.CommandContext(cmdCtx, "/bin/bash", "-c", wrapped)

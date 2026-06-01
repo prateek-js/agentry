@@ -147,7 +147,7 @@ func newSession(id string) (*Session, error) {
 
 	// --norc --noprofile to skip USER rc files (no ~/.bashrc surprises),
 	// then we EXPLICITLY source operator-staged /etc/profile.d/*.sh below.
-	// That's what wires up /var/run/xdp/<service>/<KEY> → TRINO_URL etc.
+	// That's what wires up /var/run/agentry/<service>/<KEY> → TRINO_URL etc.
 	// for any session command_run starts.
 	cmd := exec.Command(shellPath, "--norc", "--noprofile")
 	cmd.Env = append(os.Environ(), "TERM=dumb", "PS1=", "PS2=")

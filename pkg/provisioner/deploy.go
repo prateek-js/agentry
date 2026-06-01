@@ -58,7 +58,7 @@ func (p *Provisioner) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Implicitly build first — saves a round-trip for the LLM /
-	// `xdp deploy` flow. If you want explicit control over the tag,
+	// `agentry deployment` flow. If you want explicit control over the tag,
 	// pass tag via DeployRequest (we propagate it into the build).
 	manifest, err := p.runBuild(r.Context(), id, req.Tag)
 	if err != nil {

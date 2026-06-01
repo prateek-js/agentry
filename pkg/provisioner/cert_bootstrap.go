@@ -282,7 +282,7 @@ func RunCertRenewer(ctx context.Context, cfg Config, bundle *ClusterCertBundle, 
 	}
 }
 
-// genClusterKeypairAndCSR mirrors what xdp init does on the laptop —
+// genClusterKeypairAndCSR mirrors what agentry init does on the laptop —
 // fresh P-256 keypair, CSR with the cluster ID in the CN (the broker
 // overwrites the subject anyway; we just supply a sensible placeholder
 // so logs of mid-flight CSRs are debuggable).

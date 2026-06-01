@@ -30,7 +30,7 @@ type Lockfile struct {
 }
 
 // LockedBinding is one bound cluster service. Env values are NOT
-// stored (those live in /var/run/xdp/<service>/<key> inside the
+// stored (those live in /var/run/agentry/<service>/<key> inside the
 // sandbox); only env var names are recorded so the deploy side knows
 // what contract to re-bind against.
 type LockedBinding struct {

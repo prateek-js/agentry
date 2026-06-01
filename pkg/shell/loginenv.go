@@ -15,7 +15,7 @@ import (
 // Why this exists: things we spawn (jupyter kernels, project starts)
 // inherit the runtime daemon's env. The runtime started before any
 // bindings happened, so its env doesn't contain TRINO_URL etc. even
-// when /var/run/xdp/trino/TRINO_URL is on disk. Running bash -lc env
+// when /var/run/agentry/trino/TRINO_URL is on disk. Running bash -lc env
 // at spawn time re-reads the profile scripts so children see the
 // freshly-bound vars.
 //

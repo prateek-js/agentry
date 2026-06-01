@@ -325,7 +325,7 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sandboxes/{id}/restore", p.handleRestore)
 
 	// Service bindings — bind a cluster service to a sandbox. Writes
-	// credential files under /etc/sandbox/creds/xdp/<service>/ inside
+	// credential files under /etc/sandbox/creds/agentry/<service>/ inside
 	// the sandbox; shell shim exports them as env vars on next shell
 	// start (or project restart).
 	mux.HandleFunc("POST /api/sandboxes/{id}/bindings", p.handleBindingCreate)
@@ -341,8 +341,8 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// deployment_id + public URL.
 	mux.HandleFunc("POST /api/sandboxes/{id}/deploy", p.handleDeploy)
 
-	// User-staged secrets — writes to /etc/sandbox/creds/xdp/secrets/.
-	// Set via `xdp env set` (user terminal, hidden prompt) or the
+	// User-staged secrets — writes to /etc/sandbox/creds/agentry/secrets/.
+	// Set via `agentry env set` (user terminal, hidden prompt) or the
 	// MCP env_set tool (which rejects secret-shaped values so they
 	// don't leak into chat context). Listed by name only.
 	mux.HandleFunc("POST /api/sandboxes/{id}/secrets", p.handleSecretSet)

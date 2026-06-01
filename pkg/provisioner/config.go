@@ -51,7 +51,7 @@ type Config struct {
 
 	// RuntimeAPIKey is the X-Sandbox-API-Key the provisioner stamps on
 	// direct (non-tunneled) calls to the runtime container — e.g. when
-	// writing service-binding files into /etc/sandbox/creds/xdp/. Empty
+	// writing service-binding files into /etc/sandbox/creds/agentry/. Empty
 	// means "runtime accepts unauthed calls", which is the dev posture.
 	// Set via SANDBOX_RUNTIME_API_KEY.
 	RuntimeAPIKey string

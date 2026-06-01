@@ -68,15 +68,14 @@ func Register(server *mcp.Server, c *Client) {
 	}, serviceList(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "service_bind",
-		Description: "Wire a cluster service (Trino, Spark, …) into the sandbox. Returns the env var names the service exposes — your code reads those at runtime. " +
-			"In dev mode, dev-tier credentials are minted automatically. In production the same call mints prod-tier creds at deploy time. " +
-			"Code reads env vars (e.g. os.environ['TRINO_URL']) — DO NOT hardcode connection strings. " +
-			"At deploy, every bound service becomes a `requires:` line in the deployment manifest.",
+		Description: "Wire a cluster service (postgres, redis, openai, anthropic, …) into the sandbox. Returns the env var names the service exposes — your code reads those at runtime. " +
+			"Credentials come from the user (passed in env or via the dashboard); never invent connection strings or API keys. " +
+			"Code reads env vars (e.g. os.environ['DATABASE_URL']) — DO NOT hardcode connection strings or secrets in source.",
 	}, serviceBind(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "secret_set",
 		Description: "Set a non-secret env var the app needs (e.g. APP_ENV=production, FEATURE_FLAG_X=true). " +
-			"REJECTS values matching common secret patterns (sk-*, AKIA*, JWT shape, etc) with code B010 — for those, tell the user to run `xdp env set <NAME>` in their terminal so the value never enters chat context.",
+			"REJECTS values matching common secret patterns (sk-*, AKIA*, JWT shape, etc) with code B010 — for those, tell the user to run `agentry env set <NAME>` in their terminal so the value never enters chat context.",
 	}, secretSet(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "secret_list",
@@ -91,8 +90,7 @@ func Register(server *mcp.Server, c *Client) {
 	}, buildImage(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "deploy",
-		Description: "Deploy this sandbox's app to the cluster. Builds implicitly, posts the manifest to XDP, returns the deployment_id + public_url. " +
-			"PUBLIC ACTION — verify with the user before invoking unless they explicitly asked you to deploy.",
+		Description: "Legacy deploy tool — points at a substrate that no longer exists. Don't call this; tell the user to publish the sandbox port via the dashboard at https://app.agentry.run (Public URLs → pick port → Publish) and you'll get back a https://<name>.agentry.live URL.",
 	}, deployApp(c))
 	// — Shell ───────────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
@@ -224,7 +222,7 @@ type serviceBindArgs struct {
 type secretSetArgs struct {
 	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox to set the env on"`
 	Name      string `json:"name" jsonschema:"env var name; must match [A-Z_][A-Z0-9_]*"`
-	Value     string `json:"value" jsonschema:"value (rejected if it looks like a secret — use xdp env set on terminal for those)"`
+	Value     string `json:"value" jsonschema:"value (rejected if it looks like a secret — use agentry env set on terminal for those)"`
 }
 
 type sandboxIDOnlyArgs struct {
@@ -345,7 +343,7 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxInfo]
 			return errResult(err.Error()), info, nil
 		}
 		// Best-effort: apply any cluster-default service binds the
-		// user staged via `xdp service bind <service>`. A failure
+		// user staged via `agentry service bind <service>`. A failure
 		// here doesn't void the create — the LLM still gets a
 		// working sandbox, just without the auto-applied creds.
 		if c.PostCreateHook != nil {
