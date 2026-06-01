@@ -68,9 +68,12 @@ Service catalog (cluster-scoped):
   agentry service binds                    list cluster defaults stored locally
   agentry service unbind <service>
 
-Deployments (publish a sandbox port to a *.agentry.live URL):
-  agentry deployment ls
-  agentry deployment publish     (use the dashboard for now)
+Shared ports (expose a live sandbox port at a *.agentry.live URL):
+  agentry share ls
+  agentry share                            (use the dashboard for now)
+
+Deployments (build prod image + run as a target — coming soon):
+  agentry deploy ...
 
 Configuration: ~/.agentry/agentry.json. Pinned sandbox: ~/.agentry/state.json.
 Run "agentry init" once with the token from the dashboard, "agentry cluster"
@@ -102,17 +105,16 @@ func main() {
 		os.Exit(cmdForward(os.Args[2:]))
 	case "env":
 		os.Exit(cmdEnv(os.Args[2:]))
-	case "deployment":
-		os.Exit(cmdDeployment(os.Args[2:]))
-	case "deploy":
-		// Legacy: the old `deploy` command hit the provisioner's
-		// XDP-stub deploy endpoint, which was tied to substrate that
-		// no longer exists. Redirect users to the new "publish a port"
-		// workflow under `agentry deployment` and exit non-zero so
+	case "share":
+		os.Exit(cmdShare(os.Args[2:]))
+	case "deployment", "deploy":
+		// Real Deploy lands soon (#118/#120). Until then, point users
+		// at `agentry share` for live-port URLs or the dashboard for
+		// the real Deploy flow (also coming there). Exit non-zero so
 		// scripts notice.
 		fmt.Fprintln(os.Stderr,
-			"agentry deploy is gone — use `agentry deployment` for publishing\n"+
-				"a sandbox port to a *.agentry.live URL.")
+			"agentry deploy/deployment is coming soon —\n"+
+				"  for sharing a sandbox port to a URL, use `agentry share` or the dashboard.")
 		os.Exit(2)
 	case "service":
 		os.Exit(cmdService(os.Args[2:]))

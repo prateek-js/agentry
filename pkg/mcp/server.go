@@ -103,21 +103,30 @@ ACCESS FROM THE USER'S BROWSER — pay attention, this is where models hallucina
 
   The sandbox_url you see (e.g. http://bridge.invalid/api/sandboxes/<id>/runtime) is for YOUR TOOL CALLS ONLY. The host "bridge.invalid" is intentionally unresolvable from a browser. DO NOT construct any URL from sandbox_url and hand it to the user — anything you build off bridge.invalid will 404 or DNS-fail for them.
 
-  Two ways for the user to reach the app you built. Pick based on what they're doing:
+  Three ways for the user to reach the app you built. Pick based on what they're doing:
 
-    A) PUBLISH to a public URL (preferred for "show me what you built"):
+    A) SHARE a sandbox port to a URL (preferred for "show me what you built"
+       while iterating — dev process keeps running):
        Tell the user to open the sandbox in the dashboard (https://app.agentry.run),
-       scroll to "Public URLs", pick the port from the dropdown, click Publish.
+       scroll to "Shared ports", pick the port from the dropdown, click Share.
        They get a https://<name>-<hex>.agentry.live URL they can open from any
        browser — no local processes, shareable, survives laptop sleep.
+       The URL points at the *live* dev server (Vite hot reload, source maps).
 
-    B) FORWARD to a local port (preferred for "I'm developing against it"):
+    B) DEPLOY a built image (preferred for "production traffic" / customer
+       link / surviving sandbox restart):
+       Call the deploy tool (or tell the user to click Deploy on the
+       dashboard). This builds a prod image from /workspace, runs it as
+       a separate container with prod env, returns a durable URL.
+
+    C) FORWARD to a local port (preferred for "I'm developing against it
+       locally and want curl/psql/debugger access"):
        Tell the user to run this in another terminal:
            agentry forward <sandbox-id>:<port>
        then open http://localhost:<port>/ in their browser.
 
   Example: a Vite dev server on port 5173 in sandbox "sales-dashboard" → either
-  "open the sandbox in the dashboard and Publish port 5173" or "run: agentry
+  "open the sandbox in the dashboard and Share port 5173" or "run: agentry
   forward sales-dashboard:5173, then open http://localhost:5173/". Never construct
   URLs from bridge.invalid, sandbox_url, or any internal path — those don't
   resolve outside your tool calls.

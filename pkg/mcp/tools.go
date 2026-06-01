@@ -90,7 +90,7 @@ func Register(server *mcp.Server, c *Client) {
 	}, buildImage(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "deploy",
-		Description: "Legacy deploy tool — points at a substrate that no longer exists. Don't call this; tell the user to publish the sandbox port via the dashboard at https://app.agentry.run (Public URLs → pick port → Publish) and you'll get back a https://<name>.agentry.live URL.",
+		Description: "Legacy deploy tool — the real Deploy lands soon (builds prod image, runs as separate container, durable URL). For now, to expose what's running in the sandbox: tell the user to open https://app.agentry.run, scroll to \"Shared ports\" on the sandbox page, pick the port from the dropdown, click Share. They get a https://<name>-<hex>.agentry.live URL backed by the live dev process.",
 	}, deployApp(c))
 	// — Shell ───────────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{

@@ -9,33 +9,36 @@ import (
 	"strings"
 )
 
-// cmdDeployment dispatches `agentry deployment *`. Read-only for now:
+// cmdShare dispatches `agentry share *`. Read-only for now:
 //
-//	agentry deployment ls       list public URLs on the current cluster
+//	agentry share ls       list shared URLs on the current cluster
 //
-// publish + unpublish live in the dashboard. They go through the
-// control plane (app.agentry.run) so they pick up org auth and audit
-// rows, and the CLI doesn't have a token path to app.agentry.run yet
-// — a follow-up will add `agentry login` and unlock CLI publishing.
-func cmdDeployment(args []string) int {
+// share/unshare live in the dashboard. They go through the control
+// plane (app.agentry.run) so they pick up org auth and audit rows, and
+// the CLI doesn't have a token path to app.agentry.run yet — a
+// follow-up will add `agentry login` and unlock CLI sharing.
+//
+// "Share" = live sandbox port exposed as a URL (dev process keeps
+// running). For prod-built deployments see `agentry deploy` (coming).
+func cmdShare(args []string) int {
 	if len(args) == 0 {
-		return die("agentry deployment: need a subcommand (ls)")
+		return die("agentry share: need a subcommand (ls)")
 	}
 	switch args[0] {
 	case "ls", "list":
-		return deploymentLs()
-	case "publish", "unpublish":
+		return shareLs()
+	case "publish", "share", "unpublish", "unshare":
 		fmt.Fprintf(os.Stderr,
-			"agentry deployment %s isn't wired into the CLI yet —\n"+
+			"agentry share %s isn't wired into the CLI yet —\n"+
 				"  use the dashboard: https://app.agentry.run\n",
 			args[0])
 		return 1
 	default:
-		return die("agentry deployment: unknown subcommand %q", args[0])
+		return die("agentry share: unknown subcommand %q", args[0])
 	}
 }
 
-func deploymentLs() int {
+func shareLs() int {
 	cfg, _, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v", err)
@@ -78,7 +81,7 @@ func deploymentLs() int {
 		shown++
 	}
 	if shown == 0 {
-		fmt.Println("(no deployments published for this cluster)")
+		fmt.Println("(no shared ports on this cluster)")
 	}
 	return 0
 }
