@@ -9,12 +9,12 @@ recipes that aren't obvious from the tool descriptions alone.
 
 | User said something like… | Read |
 |---|---|
-| "build an agent", "langgraph agent", "tool-using assistant", "chatbot that can …" | `agent.md` |
 | "dashboard", "web app", "UI on top of …", "internal tool", anything with a browser frontend | `app.md` + `skills/frontend-design/SKILL.md` |
 | "make it look nicer", "redesign", "make it beautiful", anything UI polish | `skills/frontend-design/SKILL.md` + pick a theme in `skills/theme-factory/themes/` |
 | "test the app I built", "browser tests", "screenshot the page and check" | `skills/webapp-testing/SKILL.md` |
 | "landing page", "microsite", "static HTML page", "marketing site" | `skills/frontend-design/SKILL.md` + `skills/web-artifacts-builder/SKILL.md` |
 | "consistent brand voice", "design system across pages" | `skills/brand-guidelines/SKILL.md` |
+| "build an agent / worker / service / CLI / batch job" | NOT SUPPORTED TODAY — agentry ships only single-image Next.js apps right now. Offer to build the agent/worker/etc AS a Next.js app (logic behind an /api route or a Server Action) so the existing deploy pipeline handles it. |
 
 All paths produce code that follows `coding-style.md` (80-100 lines per
 file, feature-folder layout) and runs under `projects.md` (managed

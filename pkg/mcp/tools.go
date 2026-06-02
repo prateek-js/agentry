@@ -82,17 +82,14 @@ func Register(server *mcp.Server, c *Client) {
 		Description: "List names of env vars + secrets staged in the sandbox (NEVER returns values). " +
 			"Use to know what's available before writing code that reads from env.",
 	}, secretList(c))
-	// — Build + deploy ─────────────────────────────────────────────────
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "build",
-		Description: "Build a deployable image for the sandbox. Walks /workspace/projects/, picks the one project (or errors if multiple), generates a Dockerfile + manifest, writes them under /workspace/.build/. Returns the image tag. " +
-			"USE before deploy to inspect what'll ship. Bound services + staged secrets are automatically declared in the manifest.",
-	}, buildImage(c))
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "deploy",
-		Description: "Legacy deploy tool — the real Deploy lands soon (builds prod image, runs as separate container, durable URL). For now, to expose what's running in the sandbox: tell the user to open https://app.agentry.run, scroll to \"Shared ports\" on the sandbox page, pick the port from the dropdown, click Share. They get a https://<name>-<hex>.agentry.live URL backed by the live dev process.",
-	}, deployApp(c))
 	// — Shell ───────────────────────────────────────────────────────────
+	//
+	// (Build + deploy tools removed. Deploy lives in the dashboard
+	// today; the LLM should tell the user to click Share for a quick
+	// dev preview or Deploy for a durable prod URL — see the
+	// server-instructions "access from the user's browser" block. A
+	// fresh MCP-driven deploy tool will land once we have a token-
+	// auth path from the MCP client to agentry-app.)
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "command_run",
 		Description: "Run a BLOCKING shell command and wait for stdout/exit_code. Reuse `session_id` across calls for a persistent bash PTY (keeps cwd/env). " +

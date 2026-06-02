@@ -362,11 +362,46 @@ Do these in order. **Don't skip step 0.**
 
 7. `project_start` — starts Next.js dev server with auto-restart.
 
-8. Verify:
-   - `project_list` → project `running`, port `[3000]` discovered,
-     `healthy`.
-   - `curl http://localhost:3000/` (inside the sandbox via
-     `command_run`) → returns HTML.
+8. **VERIFY-AND-FIX LOOP — don't skip.** The build isn't done when
+   `project_start` returns; it's done when the dev server is actually
+   serving healthy responses. Walk this loop AT LEAST ONCE every
+   build, more if anything looks off:
+
+   a. `project_list(sandbox_id=...)` — does the row show `running`,
+      port `[3000]` discovered, `healthy`? Anything else means
+      something's wrong; don't tell the user the app is up.
+
+   b. `project_logs(sandbox_id=..., project="app", tail=200)` — read
+      the LAST 200 LINES. You're looking for:
+      - "Error:" / "TypeError:" / "ReferenceError:" / "SyntaxError:"
+      - "Module not found" / "Cannot find module"
+      - "EADDRINUSE" / "port already in use"
+      - Stack traces (lines starting with "    at ")
+      - "Failed to compile" / Next.js red error overlay text
+      - Database errors ("ECONNREFUSED", "password authentication failed")
+      - Missing env vars ("undefined" in template literals,
+        "process.env.X is undefined")
+
+   c. `curl -i http://localhost:3000/` via command_run — does it return
+      200 with HTML? 500s mean an error you missed in the logs;
+      hard-refresh by reading logs again.
+
+   d. If you found a problem: FIX IT, don't just tell the user.
+      Common fixes you should apply yourself:
+      - "Module not found" → add to package.json + `npm install <pkg>`
+      - "Cannot find module @/lib/x" → write the file, don't just
+        delete the import
+      - Compile errors → re-read the file with file_read,
+        file_write the fix
+      - DB connection refused → did you bind the service? service_bind
+        first, then project_restart.
+      - Port 3000 in use → kill the stray process; don't pick a
+        different port (the deploy pipeline expects 3000).
+      Then `project_restart` and go back to step (a).
+
+   e. Stop the loop when (a)+(b)+(c) all pass: row `running healthy`,
+      logs show "Ready in Xms" / "✓ Compiled successfully" / no
+      errors, curl returns 200 with HTML. ONLY THEN move to step 9.
 
 9. Tell the user how to access the app. Per the access-from-browser
    recipe in the parent server-instructions block, hand them either:

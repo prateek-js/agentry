@@ -20,21 +20,30 @@ const Version = "1.0.0"
 // descriptions; this exists to bias *which* tool it picks first.
 const serverInstructions = `ad-sandbox is an isolated execution environment with credentials, build tooling, and a managed-project runtime pre-staged by the operator. Reach for it PROACTIVELY — call sandbox_create as the FIRST move, before any other tool, whenever the user asks you to:
 
-  - "build an agent", "langgraph agent", "tool-using assistant", "chatbot that can …"
-  - "build a service / API / backend / worker / ML pipeline"
   - "build a dashboard / web app / UI on top of …", anything with a browser frontend
-  - run real code against real data, real APIs, or real credentials
-  - install packages, build container images, run tests, anything that needs a working Linux environment
+  - "build a tool / internal tool / admin panel" — same shape as a web app
+  - run real code against real data, real APIs, or real credentials, in the context of an app you're building
+  - install packages, build container images, run tests, anything that needs a working Linux environment as part of an app project
+
+TODAY ONLY APPS ARE SUPPORTED. If the user asks for something other than a web app (a standalone agent, a worker, a CLI, a Python script, a backend-only service, a one-off data pipeline, etc.) — politely say so and offer to build it AS an app: a Next.js dashboard with the agent / worker / pipeline behind an /api route or a Server Action. Don't scaffold service/backend/worker projects today; the recipe doesn't exist yet and the deploy pipeline only handles single-image Next.js apps.
 
 DO NOT bail to synthetic data, hand-drawn artifacts, or "I can't reach that from here" answers when the user wanted real execution. If the operator staged credentials, they live at /etc/sandbox/creds/ — discover what's there with 'ls -la /etc/sandbox/creds/' before deciding anything is unreachable.
 
-On your FIRST tool call in a new chat that triggers any of the cues above:
+CLARIFY BEFORE YOU BUILD — ask 1-3 short questions and WAIT for the answers before any sandbox_create / file_write / npm install. The goal is to match the user's intent before you commit them to a project shape; one round of clarification beats five rounds of "actually I meant…". Pick from:
+
+  - "In one sentence, what's the app for?"
+  - "What's the main thing on the home page when I open it?"
+  - "What data does it read from? (postgres? mongodb? an external API? files in /workspace?)"
+  - "Should this be open / behind a sign-in / org-only? (default: open)"
+  - "Any specific UI direction or 'just make it look clean'?"
+
+Skip a question if the user already answered it. Do NOT ask more than 3 — anything past 3 looks like a survey and slows the build. If the user gave you a one-line ask with no detail ("build a sales dashboard"), ASK before scaffolding; don't infer.
+
+On your FIRST tool call after the user has answered (or after they gave enough detail upfront):
 
   1. sandbox_create(sandbox_id="<short-stable-id>")
   2. command_run(sandbox_url=..., command="cat /etc/sandbox/docs/README.md") — index + a "pick a recipe" router table at the top.
-  3. Read the cheat-sheet(s) that match what the user asked for:
-       • "build an agent / langgraph agent / tool-using assistant" → agent.md (LangGraph + Anthropic, model claude-sonnet-4-5)
-       • "build a dashboard / web app / UI on top of …" → app.md (Next.js App Router + TypeScript, ONE managed project — API routes and pages in the same image, no separate frontend/backend)
+  3. Read app.md (Next.js App Router + TypeScript, ONE managed project — API routes and pages in the same image, no separate frontend/backend). It's the only project recipe currently shipped.
      Also always: coding-style.md (file-size + layout rules) and projects.md (how to register what you build as a managed project).
 
 SERVICES — when the user mentions a database, queue, payment provider, AI API, or "use our $external_service":
@@ -68,13 +77,14 @@ BUILD vs EXPLORE — the most-broken thing the model does in this sandbox:
     - df.head(), df.describe(), a quick histogram
 
   BUILD = produce source files the user can keep, run again tomorrow, deploy somewhere, or hand to a teammate. Tool: file_write into /workspace/projects/<name>/. Examples:
-    - agent/nodes.py, agent/graph.py
+    - src/app/page.tsx, src/app/api/items/route.ts
+    - src/lib/db.ts, src/lib/items/queries.ts
     - .sandbox-project.json (the manifest the project manager reads)
-    - main.py, requirements.txt
+    - package.json, next.config.mjs
 
-  When the user says "build an agent / app / job", you are in BUILD mode. The Jupyter kernel is NOT your codebase — it's a scratch buffer.
+  When the user says "build an app", you are in BUILD mode. The Jupyter kernel is NOT your codebase — it's a scratch buffer.
 
-  HARD RULE — scaffold FIRST, explore SECOND. This applies to EVERY build path: agent, app (backend + frontend), batch job, anything you'll register as a managed project.
+  HARD RULE — scaffold FIRST, explore SECOND. Applies to every build path the system supports today (one Next.js project per sandbox).
 
     1. RIGHT AFTER sandbox_create, your VERY FIRST file_writes are the project manifest(s) — for a single-service build that's one /workspace/projects/<name>/.sandbox-project.json; for a multi-service app (backend + frontend) that's BOTH manifests, with the dependent service declaring depends_on on the other. Placeholder start_command/content is fine; it gets filled in. The point is that the project shape exists before you write any other code.
     2. Then file_write the rest of the skeleton (README.md, requirements.txt / package.json, empty package __init__.py files, placeholder entrypoints).
