@@ -5,17 +5,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
+
+// splitNonEmpty splits s on sep, trims each piece, and drops empties.
+// Tiny helper for parsing whitespace-separated shell output.
+func splitNonEmpty(s, sep string) []string {
+	out := make([]string, 0, 4)
+	for _, p := range strings.Split(s, sep) {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // Deploy-build endpoint.
 //
@@ -56,6 +71,16 @@ type DeployBuildRequest struct {
 	// ImageTag is the tag suffix for the built image. The full ref is
 	// "deploy-<slug>:<image_tag>".
 	ImageTag string `json:"image_tag"`
+
+	// BuildEnv is the env stamped during `npm run build` / equivalent.
+	// Next.js (and any framework that reads env at module load time)
+	// crashes the build without these — even though the same values
+	// live as runtime container env. We pass each as `--env K=V` to
+	// railpack. These values DO end up baked into image layers when
+	// referenced during the build; the image stays on the user's own
+	// docker daemon and is never pushed to a public registry, so the
+	// blast radius is contained to the user's own infra.
+	BuildEnv map[string]string `json:"build_env,omitempty"`
 }
 
 // DeployBuildResponse echoes the resulting image ref.
@@ -107,27 +132,82 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 	imageRef := fmt.Sprintf("deploy-%s:%s", projectSlug, sanitizeTag(req.ImageTag))
 
 	ctx := r.Context()
+	log.Printf("deploy-build: sandbox=%s project=%q image_tag=%s — start", sandboxID, req.Project, req.ImageTag)
 
-	// Step 0a: validate the project actually has source. The most common
-	// confusion: user clicks Deploy with project="foo" but the LLM
-	// scaffolded into /workspace/projects/bar/. We'd tar an empty
-	// directory and railpack would later fail with a baffling "could
-	// not determine how to build the app" — fail fast here with a list
-	// of what IS present instead.
-	if exists, _ := p.runtimeShellExec(ctx, sandboxID,
-		fmt.Sprintf("test -d %s && [ -n \"$(ls -A %s 2>/dev/null)\" ] && echo yes", projectPath, projectPath)); strings.TrimSpace(exists) != "yes" {
-		// Enumerate /workspace/projects/* (project subdirs) and the
-		// /workspace root for top-level files, so the user sees what's
-		// actually deployable.
+	// Step 0a: validate the project actually has source.
+	//
+	// Two failure shapes share this gate:
+	//   1. The LLM typed "pocket-expense-tracker" but the scaffold
+	//      lives in /workspace/projects/app/ — typo / guess.
+	//   2. The LLM fired `deploy` a few seconds before its scaffold
+	//      finished writing files, or mid-restructure (rm before mv).
+	//
+	// (1) is fixed by auto-resolving when exactly one project is on
+	// disk. (2) is fixed by polling — if neither the requested project
+	// NOR any candidate exists yet, wait up to 30 s before giving up.
+	// The LLM rarely retries on a hard 400, so eating a few seconds
+	// of wall-clock here turns flaky deploys into successful ones at
+	// no cost when the project genuinely doesn't exist.
+	checkProject := func() (string, []string) {
+		exists, _ := p.runtimeShellExec(ctx, sandboxID,
+			fmt.Sprintf("test -d %s && [ -n \"$(ls -A %s 2>/dev/null)\" ] && echo yes", projectPath, projectPath))
+		if strings.TrimSpace(exists) == "yes" {
+			return "yes", nil
+		}
 		subdirs, _ := p.runtimeShellExec(ctx, sandboxID,
 			"ls -d /workspace/projects/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null | head -10")
-		hint := strings.TrimSpace(subdirs)
+		return "", splitNonEmpty(strings.TrimSpace(subdirs), "\n")
+	}
+
+	exists, candidates := checkProject()
+	const settleBudget = 30 * time.Second
+	deadline := time.Now().Add(settleBudget)
+	waited := false
+	for exists != "yes" && len(candidates) != 1 && time.Now().Before(deadline) {
+		// Either nothing on disk yet, or two+ candidates with the
+		// requested name missing — the latter we can't auto-resolve
+		// anyway, so don't sit on it. Only sleep when truly empty.
+		if len(candidates) > 1 {
+			break
+		}
+		if !waited {
+			log.Printf("deploy-build: sandbox=%s project=%q not on disk; "+
+				"waiting up to %s for the LLM to finish scaffolding…",
+				sandboxID, req.Project, settleBudget)
+			waited = true
+		}
+		select {
+		case <-ctx.Done():
+			writeError(w, http.StatusServiceUnavailable, "client disconnected while waiting for project: "+ctx.Err().Error())
+			return
+		case <-time.After(2 * time.Second):
+		}
+		exists, candidates = checkProject()
+	}
+
+	switch {
+	case exists == "yes":
+		// Path-as-requested exists with content — proceed as-is.
+	case len(candidates) == 1:
+		// Auto-resolve: only one project on disk, and the caller asked
+		// for a missing name. Treat it as a typo / guess and use the
+		// real project.
+		log.Printf("deploy-build: sandbox=%s requested project %q missing; "+
+			"using sole project on disk (%q)", sandboxID, req.Project, candidates[0])
+		projectPath, projectSlug = projectPathAndSlug(candidates[0])
+		imageRef = fmt.Sprintf("deploy-%s:%s", projectSlug, sanitizeTag(req.ImageTag))
+	default:
 		msg := fmt.Sprintf("no source files at %s", projectPath)
-		if hint != "" {
-			msg += fmt.Sprintf(" — did you mean one of: %s?", strings.ReplaceAll(hint, "\n", ", "))
-		} else {
+		switch {
+		case len(candidates) > 1:
+			msg += fmt.Sprintf(" — pick one of: %s (pass via the Project field)",
+				strings.Join(candidates, ", "))
+		case len(candidates) == 0 && waited:
+			msg += fmt.Sprintf(" (and /workspace/projects/ stayed empty for %s — the LLM never scaffolded the app)", settleBudget)
+		case len(candidates) == 0:
 			msg += " (and /workspace/projects/ is empty — the LLM may not have scaffolded the app yet)"
 		}
+		log.Printf("deploy-build: sandbox=%s FAILED at project-check: %s", sandboxID, msg)
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -148,9 +228,11 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 	if _, err := p.runtimeShellExec(ctx, sandboxID,
 		fmt.Sprintf("rm -f %s && tar czf %s -C %s . 2>&1",
 			tarPathSandbox, tarPathSandbox, projectPath)); err != nil {
+		log.Printf("deploy-build: sandbox=%s FAILED at tar: %v", sandboxID, err)
 		writeError(w, http.StatusBadGateway, "tar build context: "+err.Error())
 		return
 	}
+	log.Printf("deploy-build: sandbox=%s tar of %s ok — starting railpack", sandboxID, projectPath)
 
 	// Step 2: download to provisioner-side dir, untar.
 	ctxDir := filepath.Join("/tmp", "buildctx-"+req.ImageTag)
@@ -184,15 +266,28 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 
 	// Step 3: railpack build. Image lands in the local docker daemon
 	// via BuildKit's docker exporter.
-	cmd := exec.CommandContext(ctx, "railpack", "build", ctxDir,
-		"--name", imageRef,
-		"--progress", "plain")
+	railpackArgs := []string{"build", ctxDir, "--name", imageRef, "--progress", "plain"}
+	// Forward each build-time env var. Next.js + many other stacks
+	// read env at module-load time, so `next build` reads them during
+	// page-data collection; without these the build crashes on
+	// "MONGODB_URL env var is not set" even though the runtime has them.
+	// Sort keys so build cache hits are deterministic across runs.
+	bkeys := make([]string, 0, len(req.BuildEnv))
+	for k := range req.BuildEnv {
+		bkeys = append(bkeys, k)
+	}
+	sort.Strings(bkeys)
+	for _, k := range bkeys {
+		railpackArgs = append(railpackArgs, "--env", k+"="+req.BuildEnv[k])
+	}
+	cmd := exec.CommandContext(ctx, "railpack", railpackArgs...)
 	cmd.Env = append(os.Environ(),
 		"BUILDKIT_HOST=docker-container://"+buildKitContainerName,
 	)
 	out, runErr := cmd.CombinedOutput()
 	tail := tailLog(string(out), 4*1024)
 	if runErr != nil {
+		log.Printf("deploy-build: sandbox=%s FAILED at railpack: %v", sandboxID, runErr)
 		writeError(w, http.StatusBadGateway,
 			"railpack build failed: "+runErr.Error()+"\n\n"+tail)
 		return
@@ -216,12 +311,14 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		if !found {
+			log.Printf("deploy-build: sandbox=%s FAILED — railpack returned 0 but image %s not in daemon", sandboxID, imageRef)
 			writeError(w, http.StatusBadGateway,
 				"railpack reported success but image not in daemon:\n"+tail)
 			return
 		}
 	}
 
+	log.Printf("deploy-build: sandbox=%s OK — image=%s", sandboxID, imageRef)
 	writeJSON(w, http.StatusOK, DeployBuildResponse{ImageRef: imageRef})
 }
 

@@ -45,8 +45,8 @@ func Register(server *mcp.Server, c *Client) {
 	// — Lifecycle ───────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_create",
-		Description: "Spin up an isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs) and `sandbox_id`. " +
-			"FIRST-TOUCH CHECKLIST after a successful create: `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
+		Description: "Spin up an isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id`, and `bindings` — the services the operator has pre-wired into this sandbox (each entry lists the env var names you read at runtime). " +
+			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ the `bindings` array — if a service is listed there, your code reads the env vars verbatim; DO NOT bind it again, DO NOT spin up an in-process substitute. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
 			"Pass `sandbox_id` for stable identity across calls, or omit for a generated one.",
 	}, sandboxCreate(c))
 	mcp.AddTool(server, &mcp.Tool{
@@ -226,11 +226,6 @@ type sandboxIDOnlyArgs struct {
 	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox id"`
 }
 
-type deployArgs struct {
-	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox to deploy"`
-	Cluster   string `json:"cluster,omitempty" jsonschema:"target cluster id; defaults to the provisioner's configured cluster"`
-}
-
 type commandRunArgs struct {
 	SandboxURL string  `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
 	Command    string  `json:"command" jsonschema:"the shell command to execute"`
@@ -326,10 +321,10 @@ type codeContextIDArgs struct {
 
 // --- handlers -------------------------------------------------------------
 
-func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxInfo] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxCreateArgs) (*mcp.CallToolResult, SandboxInfo, error) {
+func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxCreateResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxCreateArgs) (*mcp.CallToolResult, SandboxCreateResult, error) {
 		if a.SandboxID == "" {
-			return errResult("sandbox_id is required"), SandboxInfo{}, nil
+			return errResult("sandbox_id is required"), SandboxCreateResult{}, nil
 		}
 		info, err := c.CreateSandbox(ctx, CreateRequest{
 			SandboxID:    a.SandboxID,
@@ -337,7 +332,7 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxInfo]
 			RuntimeClass: a.RuntimeClass,
 		})
 		if err != nil {
-			return errResult(err.Error()), info, nil
+			return errResult(err.Error()), SandboxCreateResult{}, nil
 		}
 		// Best-effort: apply any cluster-default service binds the
 		// user staged via `agentry service bind <service>`. A failure
@@ -348,7 +343,17 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxInfo]
 				log.Printf("sandbox_create: post-create hook: %v", hookErr)
 			}
 		}
-		return jsonResult(info), info, nil
+		// Re-list bindings AFTER the hook so the response shows what's
+		// actually wired up. The LLM uses this to skip in-process
+		// substitutes (mongodb-memory-server, embedded sqlite) when a
+		// real cluster service is already bound. Failure is non-fatal:
+		// an empty bindings array is "I don't know" not "no bindings".
+		bindings, listErr := c.ListBindings(ctx, info.SandboxID)
+		if listErr != nil {
+			log.Printf("sandbox_create: list-bindings post-hook: %v", listErr)
+		}
+		result := SandboxCreateResult{SandboxInfo: info, Bindings: bindings}
+		return jsonResult(result), result, nil
 	}
 }
 
@@ -379,19 +384,6 @@ func buildImage(c *Client) mcp.ToolHandlerFor[sandboxIDOnlyArgs, BuildResponse] 
 			return errResult("sandbox_id is required"), BuildResponse{}, nil
 		}
 		resp, err := c.Build(ctx, a.SandboxID)
-		if err != nil {
-			return errResult(err.Error()), resp, nil
-		}
-		return jsonResult(resp), resp, nil
-	}
-}
-
-func deployApp(c *Client) mcp.ToolHandlerFor[deployArgs, DeployResponse] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a deployArgs) (*mcp.CallToolResult, DeployResponse, error) {
-		if a.SandboxID == "" {
-			return errResult("sandbox_id is required"), DeployResponse{}, nil
-		}
-		resp, err := c.Deploy(ctx, a.SandboxID, a.Cluster)
 		if err != nil {
 			return errResult(err.Error()), resp, nil
 		}

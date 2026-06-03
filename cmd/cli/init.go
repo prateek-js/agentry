@@ -129,23 +129,23 @@ func cmdInit(args []string) int {
 		return die("write CA: %v", err)
 	}
 
-	// Preserve cluster selection across re-init so the user doesn't
-	// lose their current target.
+	// Preserve everything `login` writes (PAT + org metadata) and the
+	// user's last cluster selection. `init` only owns the cert + bridge
+	// fields; clobbering APIToken here strands the user with a device
+	// cert but no control-plane auth, which breaks `agentry cluster ls`
+	// and every other PAT-gated CLI path.
 	existing, _, _ := LoadConfig()
-	cluster := ""
-	if existing != nil {
-		cluster = existing.Cluster
+	if existing == nil {
+		existing = &Config{}
 	}
-
-	cfg := &Config{
-		AppURL:         strings.TrimRight(*appURL, "/"),
-		BrokerURL:      resp.BridgeURL,
-		DeviceID:       deviceName,
-		DeviceCertPath: certPath,
-		DeviceKeyPath:  keyPath,
-		CACertPath:     caPath,
-		Cluster:        cluster,
-	}
+	existing.AppURL = strings.TrimRight(*appURL, "/")
+	existing.BrokerURL = resp.BridgeURL
+	existing.DeviceID = deviceName
+	existing.DeviceCertPath = certPath
+	existing.DeviceKeyPath = keyPath
+	existing.CACertPath = caPath
+	cfg := existing
+	cluster := cfg.Cluster
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
 	}

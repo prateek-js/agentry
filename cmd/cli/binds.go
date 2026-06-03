@@ -116,14 +116,27 @@ func deleteBind(cluster, service string) error {
 // the active cluster and POSTs each to /api/sandboxes/{id}/bindings
 // through the same tunneled HTTP client.
 //
+// getCluster is called PER INVOCATION so the binds match whichever
+// cluster the request was actually routed to — important because the
+// stdio process is long-running and `agentry cluster use <name>` can
+// change the answer between sandbox_creates. A nil getter or empty
+// string skips the hook entirely (degrades gracefully).
+//
 // The hook is best-effort: a missing config, an empty store, or one
 // failing service all log + continue. The LLM still gets a working
 // sandbox; the user just sees stderr noise about which bind didn't
 // land. The strictness floor is: NEVER block sandbox creation on a
 // laptop-side issue, because that's the worst UX of any failure
 // mode here.
-func applyClusterDefaults(cluster string, hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
+func applyClusterDefaults(getCluster func() string, hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
 	return func(ctx context.Context, info mcp.SandboxInfo) error {
+		if getCluster == nil {
+			return nil
+		}
+		cluster := getCluster()
+		if cluster == "" {
+			return nil
+		}
 		binds, err := listBinds(cluster)
 		if err != nil {
 			return fmt.Errorf("list binds: %w", err)

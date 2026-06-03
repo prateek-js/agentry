@@ -329,6 +329,12 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// the sandbox; shell shim exports them as env vars on next shell
 	// start (or project restart).
 	mux.HandleFunc("POST /api/sandboxes/{id}/bindings", p.handleBindingCreate)
+	mux.HandleFunc("GET /api/sandboxes/{id}/bindings", p.handleBindingList)
+	// Privileged: returns full env including credential values. The
+	// bridge gates this with the cluster admin cert; runtime tools
+	// inside a sandbox cannot reach it. Used by the control plane at
+	// deploy time to expand inherit_from_sandbox into a real env map.
+	mux.HandleFunc("GET /api/sandboxes/{id}/bindings/env", p.handleBindingResolve)
 
 	// Build — emits a deployment manifest + Dockerfile to
 	// /workspace/.build/ inside the sandbox. v1 returns the artifacts
@@ -345,10 +351,10 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/deployments/{id}", p.handleDeploymentStop)
 	mux.HandleFunc("/api/deployments/{id}/proxy/{rest...}", p.handleDeploymentProxy)
 
-	// Deploy — calls build implicitly, posts the manifest to the
-	// broker's stub XDP deploy endpoint, returns the assigned
-	// deployment_id + public URL.
-	mux.HandleFunc("POST /api/sandboxes/{id}/deploy", p.handleDeploy)
+	// (Sandbox-scoped /deploy stub removed. The control-plane-driven
+	// pipeline lives in agentry-app and calls /api/sandboxes/{id}/deploy-build
+	// directly. MCP no longer exposes a deploy tool — users click Deploy
+	// in the dashboard.)
 
 	// User-staged secrets — writes to /etc/sandbox/creds/agentry/secrets/.
 	// Set via `agentry env set` (user terminal, hidden prompt) or the
@@ -408,10 +414,13 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	podName := "sandbox-" + req.SandboxID
 	svcName := podName + "-svc"
+	createStart := time.Now()
+	log.Printf("provisioner: create sandbox=%s thread=%s image=%s", req.SandboxID, req.ThreadID, p.config.SandboxImage)
 
 	// Check if already exists.
 	if port, err := p.backend.GetNodePort(ctx, p.config.Namespace, svcName); err == nil && port > 0 {
 		phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
+		log.Printf("provisioner: sandbox=%s already exists (phase=%s port=%d) — returning current", req.SandboxID, phase, port)
 		writeJSON(w, 200, SandboxInfo{
 			SandboxID:  req.SandboxID,
 			SandboxURL: p.sandboxURL(req.SandboxID, port),
@@ -493,7 +502,43 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stamp AGENTRY_APP_NAME so apps in this sandbox have a stable
+	// per-sandbox namespace for their data writes (mongo db name,
+	// postgres schema, redis key prefix, s3 key prefix — see
+	// /etc/sandbox/docs/app.md "Sharing one service across many apps").
+	//
+	// Matches the prod deploy convention: orchestrator stamps the
+	// deployment slug; here we stamp the sandbox id. Both surface as
+	// the same env var name so the same code (`process.env.AGENTRY_APP_NAME`)
+	// works in dev and prod.
+	//
+	// Writes to /var/run/agentry/agentry/AGENTRY_APP_NAME — the shell
+	// shim under /etc/profile.d/sandbox-creds.sh sources every file
+	// under that tree as an env var on shell start.
+	//
+	// Retry: readyProbe is TCP-accept-ready, but the runtime takes
+	// ~200-500ms more to wire its HTTP handlers; a write fired the
+	// instant TCP accepts comes back as EOF (peer closed mid-response).
+	// 5 tries × 200 ms = 1 s budget, plenty for a healthy runtime;
+	// non-fatal if it ultimately misses — apps fall back to `?? "dev"`.
+	stampPath := "/var/run/agentry/agentry/AGENTRY_APP_NAME"
+	stampVal := []byte(req.SandboxID)
+	var stampErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if stampErr = p.runtimeFileWrite(ctx, req.SandboxID, stampPath, stampVal); stampErr == nil {
+			break
+		}
+	}
+	if stampErr != nil {
+		log.Printf("provisioner: stamp AGENTRY_APP_NAME for sandbox=%s: %v", req.SandboxID, stampErr)
+	}
+
 	phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
+	log.Printf("provisioner: sandbox=%s READY phase=%s port=%d url=%s elapsed=%s",
+		req.SandboxID, phase, nodePort, publicURL, time.Since(createStart).Round(time.Millisecond))
 	writeJSON(w, 200, SandboxInfo{
 		SandboxID:  req.SandboxID,
 		SandboxURL: publicURL,
@@ -649,6 +694,7 @@ func (p *Provisioner) handleList(w http.ResponseWriter, r *http.Request) {
 func (p *Provisioner) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx := r.Context()
+	log.Printf("provisioner: delete sandbox=%s", id)
 
 	var errors []string
 	if err := p.backend.DeleteService(ctx, p.config.Namespace, "sandbox-"+id+"-svc"); err != nil {
@@ -663,9 +709,11 @@ func (p *Provisioner) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(errors) > 0 {
+		log.Printf("provisioner: delete sandbox=%s partial cleanup: %s", id, strings.Join(errors, ", "))
 		writeError(w, 500, fmt.Sprintf("partial cleanup: %s", strings.Join(errors, ", ")))
 		return
 	}
+	log.Printf("provisioner: sandbox=%s deleted", id)
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "sandbox_id": id})
 }
 

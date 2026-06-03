@@ -13,13 +13,13 @@ import (
 // TestBindingCreate_StubMintAndFileWrite is the load-bearing test for
 // the binding endpoint: it stands up a fake "runtime" (records every
 // file_write the provisioner sends), pre-seeds a sandbox in the mock
-// backend pointing at that runtime, then POSTs a binding for trino
+// backend pointing at that runtime, then POSTs a binding for postgres
 // and asserts:
 //
 //   1. response carries the expected env var names
 //   2. the runtime received POSTs for every env var, each to the
-//      right path under /var/run/xdp/trino/
-//   3. the values match the stub mint output
+//      right path under /var/run/agentry/postgres/
+//   3. the values match what the caller supplied
 func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 	type written struct {
 		File    string
@@ -98,7 +98,7 @@ func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 		seen[w.File] = w.Content
 	}
 	for k, expected := range suppliedEnv {
-		path := "/var/run/xdp/postgres/" + k
+		path := "/var/run/agentry/postgres/" + k
 		if val, ok := seen[path]; !ok {
 			t.Errorf("runtime never received write for %q; saw %v", path, keys(seen))
 		} else if val != expected {

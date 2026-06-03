@@ -52,9 +52,16 @@ type Config struct {
 // reads are RLock so the hot routing path doesn't contend with rare
 // connect/disconnect events.
 type Broker struct {
-	cfg      Config
-	mu       sync.RWMutex
-	devices  map[string]*deviceConn
+	cfg Config
+	mu  sync.RWMutex
+	// devices: device CN → list of currently-active yamux sessions.
+	// Multiple sessions per CN are allowed on purpose: Roo, Claude
+	// Code, Cursor each spawn their own `agentry stdio`, and Roo will
+	// respawn the child on any exit. Booting the older session every
+	// time a new one connects (the previous behaviour) turned that
+	// into a tunnel firehose where every in-flight request raced a
+	// kick. Routes pick the newest live session per CN.
+	devices  map[string][]*deviceConn
 	clusters map[string]*clusterConn
 
 	// deploy is the optional hostname → sandbox-port registry. Set via
@@ -63,14 +70,24 @@ type Broker struct {
 	deploy *DeployRegistry
 }
 
+// Tenancy: every connected device + cluster carries the org_id that
+// agentry-app stamped on its cert URI SAN at issuance. The bridge
+// pulls these out of the peer cert during handleTunnel and refuses
+// to route a request from device-org-X to cluster-org-Y when X != Y.
+// Admin certs (the syncer) carry urn:agentry:admin and bypass the
+// filter.
+
 type deviceConn struct {
 	id        string
+	orgID     string // urn:agentry:org:<id> from device cert SAN
+	admin     bool   // urn:agentry:admin from device cert SAN (syncer only)
 	sess      *yamux.Session
 	connected time.Time
 }
 
 type clusterConn struct {
 	id        string
+	orgID     string // urn:agentry:org:<id> from cluster cert SAN
 	sess      *yamux.Session
 	rt        *tunnel.RoundTripper
 	connected time.Time
@@ -87,7 +104,7 @@ func New() *Broker { return NewWithConfig(Config{}) }
 func NewWithConfig(cfg Config) *Broker {
 	return &Broker{
 		cfg:      cfg,
-		devices:  make(map[string]*deviceConn),
+		devices:  make(map[string][]*deviceConn),
 		clusters: make(map[string]*clusterConn),
 	}
 }
@@ -112,6 +129,12 @@ func (b *Broker) Handler() http.Handler {
 	// /api/deployments (deploy run/get/stop) and /api/sandboxes/{sid}/
 	// deploy-build. Used by the deployment orchestrator on agentry-app.
 	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/deploy-build", b.handleClusterDeployBuild)
+	// Bindings: GET ".../sandboxes/{sid}/bindings" returns names + source
+	// services only (no values); GET ".../bindings/env" is the privileged
+	// resolved-env path used by the control plane at deploy time. Both
+	// proxy through to the provisioner verbatim.
+	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}/bindings", b.handleClusterSandboxBindings)
+	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}/bindings/env", b.handleClusterSandboxBindingsEnv)
 	mux.HandleFunc("/api/clusters/{id}/deployments", b.handleClusterDeploymentsRoot)
 	mux.HandleFunc("/api/clusters/{id}/deployments/{rest...}", b.handleClusterDeployments)
 	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
@@ -147,12 +170,20 @@ func (b *Broker) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing "+HeaderDeviceID, http.StatusBadRequest)
 			return
 		}
+		// Tenancy: read the org_id (or admin flag) out of the device
+		// cert URI SAN. agentry-app stamps these at issuance; without
+		// them the request can't route anywhere.
+		orgID, admin := peerOrgIdentity(r)
+		if !b.cfg.DevMode && !admin && orgID == "" {
+			http.Error(w, "device cert missing org SAN", http.StatusForbidden)
+			return
+		}
 		sess, err := tunnel.Accept(w, r, tunnel.AcceptConfig{})
 		if err != nil {
 			log.Printf("bridge: device accept failed: %v", err)
 			return
 		}
-		b.serveDevice(deviceID, sess)
+		b.serveDevice(deviceID, orgID, admin, sess)
 
 	case tunnel.RoleCluster:
 		clusterID := r.Header.Get(HeaderClusterID)
@@ -172,16 +203,52 @@ func (b *Broker) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// Tenancy: a cluster cert carries its owning org_id in the URI
+		// SAN. Without it the bridge would have nothing to compare
+		// against when a device asked to route here.
+		orgID, _ := peerOrgIdentity(r)
+		if !b.cfg.DevMode && orgID == "" {
+			http.Error(w, "cluster cert missing org SAN", http.StatusForbidden)
+			return
+		}
 		sess, err := tunnel.Accept(w, r, tunnel.AcceptConfig{})
 		if err != nil {
 			log.Printf("bridge: cluster accept failed: %v", err)
 			return
 		}
-		b.serveCluster(clusterID, sess)
+		b.serveCluster(clusterID, orgID, sess)
 
 	default:
 		http.Error(w, "unknown or missing "+tunnel.HandshakeHeader, http.StatusBadRequest)
 	}
+}
+
+// peerOrgIdentity pulls the URI SAN out of the request's verified peer
+// cert and returns (org_id, admin). The SAN scheme is:
+//
+//	urn:agentry:org:<id>   for orgs
+//	urn:agentry:admin      for the agentry-app syncer cert
+//
+// We return (orgID="", admin=false) if the request has no peer cert
+// (dev mode), no URIs in the SAN (legacy cert), or an unknown scheme.
+// Callers decide what to do with that absence; in prod handleTunnel
+// rejects it.
+func peerOrgIdentity(r *http.Request) (string, bool) {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return "", false
+	}
+	const orgPrefix = "urn:agentry:org:"
+	const adminURN = "urn:agentry:admin"
+	for _, u := range r.TLS.PeerCertificates[0].URIs {
+		s := u.String()
+		if s == adminURN {
+			return "", true
+		}
+		if len(s) > len(orgPrefix) && s[:len(orgPrefix)] == orgPrefix {
+			return s[len(orgPrefix):], false
+		}
+	}
+	return "", false
 }
 
 // handleClusterSandboxes proxies a GET /api/sandboxes request to the
@@ -237,6 +304,23 @@ func (b *Broker) handleClusterDeployBuild(w http.ResponseWriter, r *http.Request
 		"/api/sandboxes/"+r.PathValue("sid")+"/deploy-build")
 }
 
+// handleClusterSandboxBindings proxies the "what's bound on this
+// sandbox" call to the provisioner. Returns service → env-var-names
+// only (no credential values). The dashboard's deploy form calls this
+// to render the inheritance checklist.
+func (b *Broker) handleClusterSandboxBindings(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/bindings")
+}
+
+// handleClusterSandboxBindingsEnv proxies the privileged "resolved env
+// for this sandbox" call. Returns full key→value map. Called by the
+// control plane's deploy orchestrator only.
+func (b *Broker) handleClusterSandboxBindingsEnv(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/bindings/env")
+}
+
 // handleClusterDeployments{,Root} proxy deployment lifecycle calls
 // (run / get / stop) to the cluster's provisioner. Split into two
 // handlers because Go's path patterns can't distinguish ".../deployments"
@@ -259,10 +343,16 @@ func (b *Broker) handleClusterDeployments(w http.ResponseWriter, r *http.Request
 // cluster's tunnel. Method + body + headers all flow verbatim; only
 // the URL path is rewritten to the cluster's API shape.
 func (b *Broker) proxyToCluster(w http.ResponseWriter, r *http.Request, id, upstreamPath string) {
+	// Tenant enforcement: the requester (admin syncer or org-scoped
+	// device cert) must own the target cluster. We resolve the
+	// requester's org from the peer cert, then look up the cluster
+	// under (org, name). Non-matches are 404, NOT 403 — we never
+	// confirm that a cluster name exists in another org.
+	reqOrg, reqAdmin := peerOrgIdentity(r)
 	b.mu.RLock()
 	cluster := b.clusters[id]
 	b.mu.RUnlock()
-	if cluster == nil {
+	if cluster == nil || (!reqAdmin && !b.cfg.DevMode && cluster.orgID != reqOrg) {
 		http.Error(w, fmt.Sprintf("cluster %q is offline", id), http.StatusBadGateway)
 		return
 	}
@@ -289,25 +379,34 @@ func (b *Broker) proxyToCluster(w http.ResponseWriter, r *http.Request, id, upst
 	proxy.ServeHTTP(w, r)
 }
 
-// handleClustersList returns the current connected-cluster census.
-// Read-only, no mutations possible here. Access control is handled
-// by the cmd/bridge mTLS gate before the request reaches this
-// handler in prod; in dev mode, anyone on the wire can call it.
-func (b *Broker) handleClustersList(w http.ResponseWriter, _ *http.Request) {
-	snap := b.Snapshot()
+// handleClustersList returns the connected-cluster census, scoped to
+// the requester's org. Admin certs (the agentry-app syncer) see every
+// cluster; everyone else sees only the clusters their org owns. This
+// is the endpoint that used to leak — the old version returned every
+// cluster on the bridge regardless of peer identity.
+func (b *Broker) handleClustersList(w http.ResponseWriter, r *http.Request) {
+	reqOrg, reqAdmin := peerOrgIdentity(r)
 	type clusterInfo struct {
 		ID           string `json:"id"`
 		Connected    bool   `json:"connected"`
 		ConnectedAgo string `json:"connected_ago,omitempty"`
 	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	now := time.Now()
 	out := struct {
 		Clusters []clusterInfo `json:"clusters"`
-	}{Clusters: make([]clusterInfo, 0, len(snap.Clusters))}
-	for _, c := range snap.Clusters {
+	}{Clusters: make([]clusterInfo, 0, len(b.clusters))}
+	for _, c := range b.clusters {
+		// Dev mode is unauthenticated by definition — show everything.
+		// In prod, admin sees all; everyone else sees their org only.
+		if !b.cfg.DevMode && !reqAdmin && c.orgID != reqOrg {
+			continue
+		}
 		out.Clusters = append(out.Clusters, clusterInfo{
-			ID:           c.ID,
+			ID:           c.id,
 			Connected:    true,
-			ConnectedAgo: c.ConnectedAgo.Truncate(1e9).String(),
+			ConnectedAgo: now.Sub(c.connected).Truncate(1e9).String(),
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -345,24 +444,41 @@ func peerCNEquals(r *http.Request, want string) bool {
 //
 // Blocks until the session closes, then removes the device from the
 // directory.
-func (b *Broker) serveDevice(id string, sess *yamux.Session) {
-	dc := &deviceConn{id: id, sess: sess, connected: time.Now()}
+func (b *Broker) serveDevice(id, orgID string, admin bool, sess *yamux.Session) {
+	dc := &deviceConn{id: id, orgID: orgID, admin: admin, sess: sess, connected: time.Now()}
 	b.mu.Lock()
-	// If a stale entry exists, close it. Reconnect wins.
-	if old, ok := b.devices[id]; ok {
-		_ = old.sess.Close()
-	}
-	b.devices[id] = dc
+	b.devices[id] = append(b.devices[id], dc)
+	n := len(b.devices[id])
 	b.mu.Unlock()
-	log.Printf("bridge: device %s connected", id)
+	if n == 1 {
+		log.Printf("bridge: device %s connected", id)
+	} else {
+		// Second+ live session for the same CN — the user has Roo and
+		// Claude Code (etc.) both running, or Roo's child is racing a
+		// respawn. Note it once per attach instead of kicking the old.
+		log.Printf("bridge: device %s additional session attached (now %d live)", id, n)
+	}
 
 	defer func() {
 		b.mu.Lock()
-		if cur, ok := b.devices[id]; ok && cur == dc {
+		// Remove THIS session from the slice; leave any siblings alone.
+		list := b.devices[id]
+		for i, cur := range list {
+			if cur == dc {
+				b.devices[id] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		remaining := len(b.devices[id])
+		if remaining == 0 {
 			delete(b.devices, id)
 		}
 		b.mu.Unlock()
-		log.Printf("bridge: device %s disconnected", id)
+		if remaining == 0 {
+			log.Printf("bridge: device %s disconnected", id)
+		} else {
+			log.Printf("bridge: device %s session detached (%d still live)", id, remaining)
+		}
 	}()
 
 	srv := &http.Server{
@@ -396,9 +512,9 @@ func isCleanSessionEnd(err error) bool {
 // closes. The bridge doesn't accept streams from the cluster — it
 // opens them on demand from device handlers — so all this loop has
 // to do is hold the registration alive.
-func (b *Broker) serveCluster(id string, sess *yamux.Session) {
+func (b *Broker) serveCluster(id, orgID string, sess *yamux.Session) {
 	rt := tunnel.NewRoundTripper(sess)
-	cc := &clusterConn{id: id, sess: sess, rt: rt, connected: time.Now()}
+	cc := &clusterConn{id: id, orgID: orgID, sess: sess, rt: rt, connected: time.Now()}
 	b.mu.Lock()
 	if old, ok := b.clusters[id]; ok {
 		_ = old.sess.Close()
@@ -544,8 +660,12 @@ func (b *Broker) Snapshot() Snapshot {
 		Devices:  make([]ConnInfo, 0, len(b.devices)),
 		Clusters: make([]ConnInfo, 0, len(b.clusters)),
 	}
-	for _, d := range b.devices {
-		s.Devices = append(s.Devices, ConnInfo{ID: d.id, ConnectedAgo: now.Sub(d.connected)})
+	// devices is multi-valued (one slice per CN); report each live
+	// session so the snapshot reflects real concurrency.
+	for _, list := range b.devices {
+		for _, d := range list {
+			s.Devices = append(s.Devices, ConnInfo{ID: d.id, ConnectedAgo: now.Sub(d.connected)})
+		}
 	}
 	for _, c := range b.clusters {
 		s.Clusters = append(s.Clusters, ConnInfo{ID: c.id, ConnectedAgo: now.Sub(c.connected)})
@@ -558,13 +678,15 @@ func (b *Broker) Snapshot() Snapshot {
 // goroutines.
 func (b *Broker) Shutdown(_ context.Context) error {
 	b.mu.Lock()
-	for _, d := range b.devices {
-		_ = d.sess.Close()
+	for _, list := range b.devices {
+		for _, d := range list {
+			_ = d.sess.Close()
+		}
 	}
 	for _, c := range b.clusters {
 		_ = c.sess.Close()
 	}
-	b.devices = make(map[string]*deviceConn)
+	b.devices = make(map[string][]*deviceConn)
 	b.clusters = make(map[string]*clusterConn)
 	b.mu.Unlock()
 	return nil

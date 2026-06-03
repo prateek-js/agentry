@@ -1,19 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"sort"
-	"strings"
 )
 
 // cmdSandbox dispatches `agentry sandbox *`. All paths talk to the
-// bridge's /api/clusters/{cluster}/sandboxes/{...} endpoints over
-// plain HTTPS with the device mTLS cert as auth — no yamux session
-// needed; the bridge already proxies through to the provisioner.
+// control plane's /api/v1/clusters/{name}/sandboxes/{...} endpoints
+// with the user's PAT. The control plane proxies through to the
+// bridge over its admin mTLS cert, so the CLI never has to manage
+// device certs for these read/delete flows.
 //
 //	agentry sandbox ls                    list sandboxes on current cluster
 //	agentry sandbox use <id>              pin <id> as the default for env/forward
@@ -99,16 +95,12 @@ func sandboxRm(id string) int {
 	if cfg.Cluster == "" {
 		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
-	url := strings.TrimRight(cfg.BrokerURL, "/") + "/api/clusters/" + cfg.Cluster + "/sandboxes/" + id
-	req, _ := http.NewRequest("DELETE", url, nil)
-	resp, err := bridgeClient(cfg).Do(req)
+	client, err := newAppClient(cfg)
 	if err != nil {
-		return die("delete: %v", err)
+		return die("%v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return die("status=%d %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	if err := client.delete("clusters/" + cfg.Cluster + "/sandboxes/" + id); err != nil {
+		return die("delete: %v", err)
 	}
 	// Clear the pin too — otherwise the next `agentry forward` says
 	// "use --sandbox" but the user thought they had one selected.
@@ -121,9 +113,10 @@ func sandboxRm(id string) int {
 	return 0
 }
 
-// sandboxInfo mirrors the bridge's /api/clusters/{c}/sandboxes
-// response. Local copy of the wire shape — same rationale as
-// clusterInfo in cluster.go.
+// sandboxInfo mirrors `SandboxSummary` returned by the control plane's
+// `GET /api/v1/clusters/{id}/sandboxes`. The control plane proxies the
+// underlying call to the bridge using its admin mTLS cert, then
+// re-emits the snapshot — same shape, scoped to the calling org.
 type sandboxInfo struct {
 	SandboxID  string `json:"sandbox_id"`
 	SandboxURL string `json:"sandbox_url"`
@@ -131,35 +124,15 @@ type sandboxInfo struct {
 }
 
 func fetchSandboxes(cfg *Config) ([]sandboxInfo, error) {
-	url := strings.TrimRight(cfg.BrokerURL, "/") + "/api/clusters/" + cfg.Cluster + "/sandboxes"
-	req, _ := http.NewRequest("GET", url, nil)
-	resp, err := bridgeClient(cfg).Do(req)
+	client, err := newAppClient(cfg)
 	if err != nil {
 		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 	var out struct {
 		Sandboxes []sandboxInfo `json:"sandboxes"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := client.get("clusters/"+cfg.Cluster+"/sandboxes", &out); err != nil {
 		return nil, err
 	}
 	return out.Sandboxes, nil
-}
-
-// bridgeClient builds an http.Client using the device mTLS cert. Used
-// by sandbox + deployment + cluster paths that hit the bridge's
-// /api/* admin endpoints over plain HTTPS (not the yamux tunnel).
-// Shared because all three commands need the same TLS setup.
-func bridgeClient(cfg *Config) *http.Client {
-	tlsConf, err := buildClientTLS(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agentry: build client TLS: %v\n", err)
-		return http.DefaultClient
-	}
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConf}}
 }

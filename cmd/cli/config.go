@@ -31,6 +31,14 @@ type Config struct {
 	DeviceCertPath string `json:"device_cert_path,omitempty"`
 	DeviceKeyPath  string `json:"device_key_path,omitempty"`
 	CACertPath     string `json:"ca_cert_path,omitempty"`
+
+	// Personal access token used for control-plane calls (cluster ls,
+	// sandbox ls, service catalog). Minted by `agentry login`. Empty
+	// = run login first. The CLI never sends this on bridge calls;
+	// the bridge tunnel uses the device cert only.
+	APIToken  string `json:"api_token,omitempty"`
+	Org       string `json:"org,omitempty"`        // cached org name from login (display only)
+	UserEmail string `json:"user_email,omitempty"` // cached user email (display only)
 }
 
 // ConfigPath returns the canonical path. Uses $AGENTRY_CONFIG to

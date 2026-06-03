@@ -1,19 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strconv"
-	"strings"
 )
 
 // cmdCluster handles `agentry cluster [subcommand]`. With no subcommand,
-// queries the broker for the cluster list and shows an interactive
-// picker — that's the common case after `agentry init`. Explicit
-// subcommands stay supported for scripted use.
+// queries the control plane for the cluster list and shows an
+// interactive picker — that's the common case after `agentry login`.
+// Explicit subcommands stay supported for scripted use.
 //
 //	agentry cluster              # interactive select
 //	agentry cluster current      # print current
@@ -38,20 +34,23 @@ func cmdCluster(args []string) int {
 	}
 }
 
-// clusterPick queries the broker, shows the list, and lets the user
-// pick by number. The default selection ("press enter") is whatever
-// the user had configured before — so a re-run is a no-op confirmation.
+// clusterPick queries the control plane, shows the list, and lets the
+// user pick by number. The default selection ("press enter") is
+// whatever the user had configured before — so a re-run is a no-op
+// confirmation. We key everything off `name` because that's the
+// human-readable handle the user typed at create time; the id is
+// stored alongside so headless commands can pin precisely.
 func clusterPick() int {
 	cfg, _, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `agentry init` first)", err)
+		return die("load config: %v (run `agentry login` first)", err)
 	}
 	list, err := fetchClusters(cfg)
 	if err != nil {
 		return die("fetch cluster list: %v", err)
 	}
 	if len(list) == 0 {
-		fmt.Println("No clusters online. Ask your operator to start one and try again.")
+		fmt.Println("No clusters yet. Open https://app.agentry.run to add one.")
 		return 1
 	}
 
@@ -59,11 +58,11 @@ func clusterPick() int {
 	defaultIdx := 1
 	for i, c := range list {
 		marker := ""
-		if c.ID == cfg.Cluster {
+		if c.Name == cfg.Cluster || c.ID == cfg.Cluster {
 			marker = " (current)"
 			defaultIdx = i + 1
 		}
-		fmt.Printf("  %d) %s%s\n", i+1, c.ID, marker)
+		fmt.Printf("  %d) %-30s %s%s\n", i+1, c.Name, c.Status, marker)
 	}
 	fmt.Println()
 
@@ -76,7 +75,7 @@ func clusterPick() int {
 		}
 		idx = n
 	}
-	chosen := list[idx-1].ID
+	chosen := list[idx-1].Name
 	cfg.Cluster = chosen
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
@@ -101,7 +100,7 @@ func clusterCurrent() int {
 func clusterUse(name string) int {
 	cfg, _, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `agentry init` first)", err)
+		return die("load config: %v (run `agentry login` first)", err)
 	}
 	cfg.Cluster = name
 	if err := cfg.Save(); err != nil {
@@ -121,61 +120,44 @@ func clusterLs() int {
 		return die("fetch cluster list: %v", err)
 	}
 	if len(list) == 0 {
-		fmt.Println("(no clusters online)")
+		fmt.Println("(no clusters — open https://app.agentry.run to add one)")
 		return 0
 	}
 	for _, c := range list {
 		marker := ""
-		if c.ID == cfg.Cluster {
+		if c.Name == cfg.Cluster || c.ID == cfg.Cluster {
 			marker = " *"
 		}
-		fmt.Printf("%-30s %s%s\n", c.ID, c.ConnectedAgo, marker)
+		fmt.Printf("%-30s %s%s\n", c.Name, c.Status, marker)
 	}
 	return 0
 }
 
-// clusterInfo mirrors what the broker returns on /api/clusters.
-// Kept local rather than importing pkg/broker just for the response
-// schema — the wire shape is the contract, not the Go struct.
+// clusterInfo mirrors `ClusterSummary` from the control plane
+// (`GET /api/v1/clusters`). Kept local so the CLI doesn't import the
+// agentry-app module — the wire shape is the contract.
 type clusterInfo struct {
-	ID           string `json:"id"`
-	Connected    bool   `json:"connected"`
-	ConnectedAgo string `json:"connected_ago,omitempty"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Backend    string  `json:"backend"`
+	Status     string  `json:"status"`
+	LastSeenAt *string `json:"last_seen_at,omitempty"`
+	CreatedAt  string  `json:"created_at"`
 }
 
+// fetchClusters calls the control plane via PAT. Org filtering happens
+// server-side from the bearer token's identity — the CLI never sees a
+// cluster outside its own org.
 func fetchClusters(cfg *Config) ([]clusterInfo, error) {
-	if cfg.BrokerURL == "" {
-		return nil, fmt.Errorf("config has no broker_url — run `agentry init`")
-	}
-	// Two auth modes, mutually exclusive:
-	//   - prod: client cert (DeviceCertPath set) → mTLS, no bearer
-	//   - dev:  bearer token  (DeviceToken set)  → plain HTTPS or HTTP
-	url := strings.TrimRight(cfg.BrokerURL, "/") + "/api/clusters"
-	req, _ := http.NewRequest("GET", url, nil)
-
-	if cfg.DeviceCertPath == "" || cfg.DeviceKeyPath == "" {
-		return nil, fmt.Errorf("config has no device cert — run `agentry init`")
-	}
-	tlsConf, err := buildClientTLS(cfg)
+	client, err := newAppClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("build client TLS: %w", err)
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConf}}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("get %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return nil, err
 	}
 	var out struct {
 		Clusters []clusterInfo `json:"clusters"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
+	if err := client.get("clusters", &out); err != nil {
+		return nil, err
 	}
 	return out.Clusters, nil
 }

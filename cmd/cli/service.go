@@ -10,22 +10,52 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/agentry/agentry/pkg/tunnel"
 	"golang.org/x/term"
 )
 
+// serviceHelp is the `agentry service --help` block.
+const serviceHelp = `agentry service - manage cluster service bindings (databases, AI APIs, …)
+
+Services live in the cluster catalog: postgres, mysql, mongodb, redis,
+clickhouse, aws-s3, smtp, stripe, openai, anthropic, http-api. Binding
+a service stages its credentials so every sandbox in this cluster gets
+the matching env vars on shell start.
+
+Usage:
+  agentry service ls                        list available services in the catalog
+  agentry service bind <service>            bind for THIS cluster (default)
+  agentry service bind --sandbox <id> <s>   bind only to one sandbox (one-shot)
+  agentry service bind <s> --from-env       read values from current shell env
+  agentry service binds                     list cluster-default bindings stored locally
+  agentry service unbind <service>          drop a cluster default
+
+Examples:
+  # First time: pick a cluster, then bind postgres
+  agentry cluster use hetzner-test
+  agentry service bind postgres
+
+  # One-shot bind on a specific sandbox (won't apply to future creates)
+  agentry service bind --sandbox sales-demo redis
+
+  # CI: read STRIPE_SECRET_KEY etc from the shell instead of prompting
+  STRIPE_SECRET_KEY=sk_test_... agentry service bind stripe --from-env
+
+Service-catalog vars and prompts:
+  Each service declares 1+ "fields" (the inputs you provide). One field
+  often fans out to multiple env vars so different SDKs can read their
+  conventional name — e.g. postgres takes one "url" and exports both
+  DATABASE_URL and POSTGRES_URL. The CLI prompts once per FIELD, never
+  once per env var.
+`
+
 // cmdService dispatches `agentry service *` subcommands.
-//
-//	agentry service list                            (catalog)
-//	agentry service bind <service>                  (cluster-default: stored locally)
-//	agentry service bind --sandbox <id> <service>   (one-shot override)
-//	agentry service binds                           (list stored cluster defaults)
-//	agentry service unbind <service>                (drop a stored default)
 func cmdService(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "agentry service: need a subcommand (ls|bind|binds|unbind)")
-		return 2
+	if len(args) == 0 || isHelpFlag(args[0]) {
+		fmt.Fprint(os.Stdout, serviceHelp)
+		return 0
 	}
 	switch args[0] {
 	case "bind":
@@ -37,8 +67,16 @@ func cmdService(args []string) int {
 	case "unbind":
 		return serviceUnbindCLI(args[1:])
 	default:
-		return die("agentry service: unknown subcommand %q", args[0])
+		fmt.Fprintf(os.Stderr, "agentry service: unknown subcommand %q\n\n", args[0])
+		fmt.Fprint(os.Stderr, serviceHelp)
+		return 2
 	}
+}
+
+// isHelpFlag returns true if s is one of the canonical help flags.
+// Used so every subcommand can support a uniform "--help".
+func isHelpFlag(s string) bool {
+	return s == "--help" || s == "-h" || s == "help"
 }
 
 // serviceBindCLI is the interactive binding path. Two modes:
@@ -179,10 +217,30 @@ func serviceBindCLI(args []string) int {
 	return 0
 }
 
-// serviceBindsListCLI prints what cluster-default bindings are
-// stored on this laptop for the active cluster. Names + var names
-// only — values stay in the JSON file.
-func serviceBindsListCLI(_ []string) int {
+// serviceBindsListCLI prints what cluster-default bindings are stored
+// on this laptop for the active cluster.
+//
+// Output is a kubectl-style table: SERVICE | UNIQUE VALUES | ENV VARS.
+// "Unique values" deduplicates identical injected values back to the
+// number of distinct inputs the user supplied — so mongodb (one URL
+// fanned out to 3 env vars) shows "1 input" instead of leaving the
+// reader to puzzle out why there are three names.
+func serviceBindsListCLI(args []string) int {
+	if len(args) > 0 && isHelpFlag(args[0]) {
+		fmt.Fprint(os.Stdout, `agentry service binds - list cluster-default bindings on this laptop
+
+Usage:
+  agentry service binds
+
+Shows what cluster-default service bindings are staged on THIS laptop
+for the cluster you've selected with `+"`agentry cluster use`"+`. These
+get applied automatically to every new sandbox in the cluster.
+
+Values themselves stay in ~/.agentry/services/<cluster>/<svc>.json
+(0600). This command only prints metadata.
+`)
+		return 0
+	}
 	cfg, _, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v", err)
@@ -195,19 +253,30 @@ func serviceBindsListCLI(_ []string) int {
 		return die("list binds: %v", err)
 	}
 	if len(binds) == 0 {
-		fmt.Printf("(no cluster defaults stored for %s)\n", cfg.Cluster)
-		fmt.Fprintln(os.Stderr, "  run `agentry service bind <service>` to stage one.")
+		fmt.Printf("No bindings stored for cluster %q.\n", cfg.Cluster)
+		fmt.Fprintf(os.Stderr, "Run `agentry service bind <service>` to add one.\n")
 		return 0
 	}
-	fmt.Printf("cluster=%s, stored at %s\n\n", cfg.Cluster, bindsDir(cfg.Cluster))
+	fmt.Printf("Cluster %q — bindings stored at %s\n\n", cfg.Cluster, bindsDir(cfg.Cluster))
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERVICE\tINPUTS\tENV VARS")
 	for _, b := range binds {
 		names := make([]string, 0, len(b.Env))
 		for k := range b.Env {
 			names = append(names, k)
 		}
 		sort.Strings(names)
-		fmt.Printf("%-12s %s\n", b.Service, strings.Join(names, " "))
+		// Count distinct values — a proxy for "how many fields did the
+		// user supply" when the catalog isn't reachable. mongodb (3
+		// env vars sharing one value) collapses to "1".
+		seen := make(map[string]struct{}, len(b.Env))
+		for _, v := range b.Env {
+			seen[v] = struct{}{}
+		}
+		fmt.Fprintf(tw, "%s\t%d input(s)\t%s\n", b.Service, len(seen), strings.Join(names, ", "))
 	}
+	tw.Flush()
 	return 0
 }
 
@@ -232,9 +301,30 @@ func serviceUnbindCLI(args []string) int {
 	return 0
 }
 
-// serviceListCLI is the CLI mirror of the service_list MCP tool —
-// prints the catalog's services with their declared env vars.
-func serviceListCLI(_ []string) int {
+// serviceListCLI is the CLI mirror of the service_list MCP tool.
+//
+// Output is a kubectl-style table: NAME | CATEGORY | DESCRIPTION
+// (first line only, truncated). The full description, the prompt
+// shape, and the get-started block are intentionally omitted — they'd
+// turn every `service ls` into a wall of text. `agentry service show
+// <name>` is the verbose path (lands when there's a real need).
+func serviceListCLI(args []string) int {
+	if len(args) > 0 && isHelpFlag(args[0]) {
+		fmt.Fprint(os.Stdout, `agentry service ls - list services in the cluster catalog
+
+Usage:
+  agentry service ls
+
+Output columns:
+  NAME         the id you pass to `+"`agentry service bind`"+`
+  CATEGORY     database, cache, ai, storage, payments, email, analytics, other
+  DESCRIPTION  one-line summary
+
+Talk to the cluster's catalog over the tunnel — requires that you've
+run `+"`agentry cluster use <name>`"+` first.
+`)
+		return 0
+	}
 	cfg, _, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v", err)
@@ -262,20 +352,25 @@ func serviceListCLI(_ []string) int {
 		fmt.Println("(catalog has no services)")
 		return 0
 	}
+
+	sort.Slice(wrap.Entries, func(i, j int) bool {
+		ni, _ := wrap.Entries[i]["name"].(string)
+		nj, _ := wrap.Entries[j]["name"].(string)
+		return ni < nj
+	})
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tCATEGORY\tDESCRIPTION")
 	for _, e := range wrap.Entries {
-		fmt.Printf("%-12s %s\n", e["name"], e["description"])
+		name, _ := e["name"].(string)
+		desc, _ := e["description"].(string)
+		category := ""
 		if extra, ok := e["extra"].(map[string]any); ok {
-			if env, ok := extra["env_vars"].([]any); ok && len(env) > 0 {
-				parts := make([]string, 0, len(env))
-				for _, v := range env {
-					if s, ok := v.(string); ok {
-						parts = append(parts, s)
-					}
-				}
-				fmt.Printf("             env: %s\n", strings.Join(parts, " "))
-			}
+			category, _ = extra["category"].(string)
 		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, category, firstLine(desc, 80))
 	}
+	tw.Flush()
 	return 0
 }
 
@@ -433,5 +528,23 @@ func containsAny(s string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+// firstLine returns the first non-empty line of s, truncated to max
+// runes with an ellipsis if it overflows. Used by `service ls` to keep
+// descriptions to one tabular column without wrapping.
+func firstLine(s string, max int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > max {
+			return string(runes[:max-1]) + "…"
+		}
+		return line
+	}
+	return ""
 }
 

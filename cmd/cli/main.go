@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,7 +34,10 @@ import (
 const usage = `agentry — laptop-side daemon + CLI for agentry.run
 
 Setup:
+  agentry login                            browser auth — the usual path
+  agentry logout                           drop + revoke the local token
   agentry init --app-url URL --token TOK [--name NAME]
+                                           legacy device-cert enrollment
   agentry status
 
 Cluster (the box running your sandboxes):
@@ -76,8 +80,8 @@ Deployments (build prod image + run as a target — coming soon):
   agentry deploy ...
 
 Configuration: ~/.agentry/agentry.json. Pinned sandbox: ~/.agentry/state.json.
-Run "agentry init" once with the token from the dashboard, "agentry cluster"
-to pick a target, then point your editor at "agentry mcp".
+Run "agentry login" once to authorize this machine, "agentry cluster" to
+pick a target, then point your editor at "agentry mcp".
 `
 
 func main() {
@@ -91,7 +95,14 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "login":
+		os.Exit(cmdLogin(os.Args[2:]))
+	case "logout":
+		os.Exit(cmdLogout(os.Args[2:]))
 	case "init":
+		// `init` is now an internal step that `login` triggers once
+		// it has a PAT (it enrolls a device cert against the app).
+		// Kept as a separate subcommand for back-compat scripts.
 		os.Exit(cmdInit(os.Args[2:]))
 	case "cluster":
 		os.Exit(cmdCluster(os.Args[2:]))
@@ -170,10 +181,18 @@ func cmdMCP(_ []string) int {
 	// http.Client whose transport is the tunnel RoundTripper plus a
 	// per-request stamp of X-Cluster. The MCP client doesn't know
 	// the bytes are tunneled — it just sees a working http.Client.
+	//
+	// clusterRef is a TTL-cached reader for the active cluster so
+	// `agentry cluster use <name>` takes effect on the very next tool
+	// call from Roo, without forcing the user to kill + restart this
+	// stdio process. Reused by the post-create hook below so a new
+	// sandbox's cluster-default service binds also come from the
+	// current cluster, not the boot-time snapshot.
+	clusterRef := newConfigCluster(cfg.Cluster)
 	inner := tunnel.NewRoundTripper(sess)
 	rt := &clusterStampedRT{
-		next:    inner,
-		cluster: cfg.Cluster,
+		next:       inner,
+		getCluster: clusterRef.Get,
 	}
 
 	// Reconnect loop. yamux sessions die from idle timeouts, network
@@ -209,10 +228,13 @@ func cmdMCP(_ []string) int {
 		HTTPClient:     tunneledHTTP,
 		// After every successful sandbox_create, replay each
 		// cluster-default service bind the user staged via
-		// `xdp service bind <service>`. Real creds live in
-		// ~/.ad-sandbox/services/<cluster>/; they ride the same
-		// tunnel that just created the sandbox.
-		PostCreateHook: applyClusterDefaults(cfg.Cluster, tunneledHTTP),
+		// `agentry service bind <service>`. Real creds live in
+		// ~/.agentry/services/<cluster>/; they ride the same tunnel
+		// that just created the sandbox. clusterRef.Get is the same
+		// TTL-cached reader the round-tripper uses, so a fresh
+		// sandbox always gets the binds matching the cluster the
+		// request was routed to.
+		PostCreateHook: applyClusterDefaults(clusterRef.Get, tunneledHTTP),
 	})
 
 	if err := mcp.RunStdio(ctx, mcpClient); err != nil &&
@@ -269,17 +291,82 @@ func die(format string, args ...any) int {
 // to every request. This is the bridge between mcp.Client (which
 // addresses one logical "provisioner") and the broker (which routes
 // per request based on this header).
+//
+// Either `cluster` (static, used by one-shot CLI subcommands that
+// exit before the user could plausibly switch clusters) or `getCluster`
+// (dynamic, used by the long-running `agentry mcp` stdio process so
+// `agentry cluster use <name>` takes effect on the next tool call
+// without restarting the child) must be set. getCluster wins when
+// both are present.
 type clusterStampedRT struct {
-	next    http.RoundTripper
-	cluster string
+	next       http.RoundTripper
+	cluster    string
+	getCluster func() string
 }
 
 func (r *clusterStampedRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone so we don't mutate the caller's request — required by
 	// http.RoundTripper contract.
 	req = req.Clone(req.Context())
-	req.Header.Set(bridge.HeaderTargetCluster, r.cluster)
+	name := r.cluster
+	if r.getCluster != nil {
+		name = r.getCluster()
+	}
+	req.Header.Set(bridge.HeaderTargetCluster, name)
 	return r.next.RoundTrip(req)
+}
+
+// configCluster reads the active cluster from ~/.agentry/agentry.json
+// with a 1-second TTL cache. Lets `agentry mcp` pick up an out-of-band
+// `agentry cluster use <name>` without forcing the user to kill + let
+// Roo respawn the child. The per-call cost is at most one file read
+// per second; tool calls take 100-1000 ms of network anyway, so the
+// 10-50 µs cost is invisible.
+//
+// Safe for concurrent use. Logs to stderr on the first call AFTER a
+// switch, so operators can correlate "my Roo started routing to a
+// different cluster" with the change.
+type configCluster struct {
+	mu       sync.Mutex
+	value    string
+	lastRead time.Time
+	ttl      time.Duration
+	prev     string // last logged value
+}
+
+// newConfigCluster returns a cache pre-warmed with the initial value.
+// The cache is poll-on-read; there's no background goroutine to clean
+// up at process exit.
+func newConfigCluster(initial string) *configCluster {
+	return &configCluster{
+		value: initial,
+		prev:  initial,
+		ttl:   time.Second,
+	}
+}
+
+// Get returns the active cluster name. Cheap when called within the
+// TTL window; one config-file read otherwise. Falls back to the last
+// known good value if the file became unreadable (e.g. user deleted
+// ~/.agentry/ mid-session).
+func (c *configCluster) Get() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Since(c.lastRead) < c.ttl {
+		return c.value
+	}
+	c.lastRead = time.Now()
+	cfg, _, err := LoadConfig()
+	if err != nil || cfg.Cluster == "" {
+		return c.value // last good
+	}
+	if cfg.Cluster != c.prev {
+		log.Printf("agentry: cluster switched %q → %q (next tool call routes there)",
+			c.prev, cfg.Cluster)
+		c.prev = cfg.Cluster
+	}
+	c.value = cfg.Cluster
+	return c.value
 }
 
 // reconnectLoop watches the current tunnel session; whenever it

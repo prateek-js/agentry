@@ -36,6 +36,15 @@ func startServerWithMockBackend(t *testing.T) (*sdkmcp.ClientSession, *httptest.
 		"GET /api/sandboxes/sb1": func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode(SandboxInfo{SandboxID: "sb1", Status: "Running"})
 		},
+		"GET /api/sandboxes/sb1/bindings": func(w http.ResponseWriter, _ *http.Request) {
+			// Default snapshot used by every test: the user staged a
+			// mongodb cluster-default, post-create hook applied it.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bindings": []SandboxBinding{
+					{Service: "mongodb", EnvVars: []string{"DATABASE_URL", "MONGODB_URI", "MONGODB_URL"}},
+				},
+			})
+		},
 		"POST /api/sandboxes/sb1/renew": func(w http.ResponseWriter, r *http.Request) {
 			b, _ := io.ReadAll(r.Body)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -102,8 +111,9 @@ func TestServerListsExpectedTools(t *testing.T) {
 	for _, want := range []string{
 		// Lifecycle
 		"sandbox_create", "sandbox_list", "sandbox_delete",
-		// Catalog + bindings + secrets + build/deploy (Phase 14–17)
-		"service_list", "service_bind", "secret_set", "secret_list", "build", "deploy",
+		// Catalog + bindings + secrets (Phase 14–17 — build/deploy MCP
+		// tools were removed; deploy now lives in the dashboard).
+		"service_list", "service_bind", "secret_set", "secret_list",
 		// Shell
 		"command_run", "command_start", "command_logs", "command_interrupt",
 		// Files
@@ -119,8 +129,8 @@ func TestServerListsExpectedTools(t *testing.T) {
 			t.Errorf("missing tool %q", want)
 		}
 	}
-	if len(got) != 26 {
-		t.Errorf("tool count = %d; want 26 (20 base + service_list/bind + secret_set/list + build/deploy)", len(got))
+	if len(got) != 24 {
+		t.Errorf("tool count = %d; want 24 (20 base + service_list/bind + secret_set/list)", len(got))
 	}
 }
 
@@ -137,6 +147,27 @@ func TestSandboxCreateRoundTrip(t *testing.T) {
 	text := contentText(t, res)
 	if !strings.Contains(text, `"sandbox_id": "sb1"`) {
 		t.Errorf("text result missing sandbox_id: %s", text)
+	}
+}
+
+// TestSandboxCreateSurfacesBindings is the load-bearing assertion
+// for the "LLM scaffolds mongodb-memory-server while a real binding
+// exists" fix. The post-create hook applies the staged binding, then
+// sandbox_create's response MUST include it so the LLM can read the
+// env-var names instead of reaching for an in-process substitute.
+func TestSandboxCreateSurfacesBindings(t *testing.T) {
+	session, _ := startServerWithMockBackend(t)
+	res := callTool(t, session, "sandbox_create", map[string]any{"sandbox_id": "sb1"})
+	if res.IsError {
+		t.Fatalf("IsError; content=%+v", res.Content)
+	}
+	text := contentText(t, res)
+	// Both the service name and the env var names must round-trip so
+	// the LLM has everything it needs in one response.
+	for _, want := range []string{"mongodb", "DATABASE_URL", "MONGODB_URI", "MONGODB_URL"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in sandbox_create response: %s", want, text)
+		}
 	}
 }
 

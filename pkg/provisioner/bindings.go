@@ -1,10 +1,15 @@
 package provisioner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/agentry/agentry/pkg/errcode"
 )
@@ -34,6 +39,210 @@ type BindingResponse struct {
 	Version   string   `json:"version,omitempty"`
 	EnvVars   []string `json:"env_vars"`
 	ExpiresAt string   `json:"expires_at,omitempty"`
+}
+
+// BindingListResponse is the GET response. Lists what's bound on this
+// sandbox WITHOUT exposing credential values. Used by the dashboard's
+// "deploy from sandbox" form to show the user which env vars will be
+// inherited (and which service supplied each one) before they click
+// Deploy. The values themselves stay in /var/run/agentry/<svc>/<key>
+// inside the sandbox until expandBindingEnv reads them at deploy time.
+type BindingListResponse struct {
+	Bindings []BindingInfo `json:"bindings"`
+}
+
+// BindingInfo is one bound service on a sandbox.
+type BindingInfo struct {
+	Service string   `json:"service"`
+	Version string   `json:"version,omitempty"`
+	EnvVars []string `json:"env_vars"`
+}
+
+// handleBindingList is GET /api/sandboxes/{id}/bindings. Returns the
+// bindings the sandbox currently has — service → env-var-names. NO
+// values cross the wire.
+//
+// Source of truth is the FILESYSTEM (/var/run/agentry/<svc>/<key>),
+// not the lockfile. The lockfile is metadata written best-effort at
+// bind time; if that write ever fails silently (it has — see
+// handleBindingCreate's swallowed err), the lockfile and reality
+// diverge. We start from the directory listing so the dashboard's
+// "what's bound here" answer matches what the sandbox actually has.
+// The lockfile contributes Version info for services it knows about.
+func (p *Provisioner) handleBindingList(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errcode.WriteJSON(w, errcode.New(errcode.BindingInvalidRequest, "sandbox id missing in path"))
+		return
+	}
+
+	// Filesystem-first scan. /var/run/agentry/<svc>/<key> = one cred
+	// file per env var, grouped by service. ListDir on a missing dir
+	// returns ([], nil), so a fresh sandbox just yields an empty list.
+	fsBindings, err := p.scanBindingFiles(r.Context(), id)
+	if err != nil {
+		// Don't fail the whole call — fall through to lockfile-only.
+		// Log so a degraded mode is visible.
+		log.Printf("bindings: scan /var/run/agentry on sandbox=%s: %v", id, err)
+	}
+
+	// Layer in version metadata from the lockfile when we have it.
+	versionFor := map[string]string{}
+	if lock, _ := p.readLockfile(r.Context(), id); lock != nil {
+		for _, b := range lock.Bindings {
+			versionFor[b.Service] = b.Version
+		}
+	}
+
+	out := BindingListResponse{Bindings: make([]BindingInfo, 0, len(fsBindings))}
+	for _, b := range fsBindings {
+		out.Bindings = append(out.Bindings, BindingInfo{
+			Service: b.Service,
+			Version: versionFor[b.Service],
+			EnvVars: b.EnvVars,
+		})
+	}
+	writeJSON(w, 200, out)
+}
+
+// scanBindingFiles enumerates /var/run/agentry/*/* inside the sandbox
+// via the runtime's /v1/file/list. Each top-level directory is a
+// service name; each file inside is one env var the bind wrote.
+// Returns ([], nil) when /var/run/agentry doesn't exist (fresh sandbox).
+func (p *Provisioner) scanBindingFiles(ctx context.Context, sandboxID string) ([]BindingInfo, error) {
+	entries, err := p.runtimeListDir(ctx, sandboxID, "/var/run/agentry", 2)
+	if err != nil {
+		return nil, err
+	}
+	// Group: service dir → env var files. Entries from a depth-2 list
+	// include both the service dirs themselves and the files under them.
+	envBySvc := map[string][]string{}
+	for _, e := range entries {
+		if e.IsDir {
+			if _, ok := envBySvc[e.Name]; !ok {
+				envBySvc[e.Name] = []string{} // ensure empty dirs show up
+			}
+			continue
+		}
+		// File: split path /var/run/agentry/<svc>/<key>
+		// Take parent dir's name as service, leaf as env var.
+		// e.Path is the full path; we split.
+		rest := strings.TrimPrefix(e.Path, "/var/run/agentry/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			continue
+		}
+		envBySvc[parts[0]] = append(envBySvc[parts[0]], parts[1])
+	}
+	out := make([]BindingInfo, 0, len(envBySvc))
+	for svc, envs := range envBySvc {
+		sort.Strings(envs)
+		out = append(out, BindingInfo{Service: svc, EnvVars: envs})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out, nil
+}
+
+// listDirEntry is the trimmed shape we need from the runtime's
+// /v1/file/list response: just enough to group bindings by service.
+type listDirEntry struct {
+	Name  string
+	Path  string
+	IsDir bool
+}
+
+// runtimeListDir calls POST /v1/file/list inside the sandbox.
+// maxDepth=2 is enough to see /var/run/agentry/<svc>/<key> in one
+// round trip.
+func (p *Provisioner) runtimeListDir(ctx context.Context, sandboxID, path string, maxDepth int) ([]listDirEntry, error) {
+	port, err := p.backend.GetNodePort(ctx, p.config.Namespace, "sandbox-"+sandboxID+"-svc")
+	if err != nil || port == 0 {
+		return nil, fmt.Errorf("sandbox %q not found", sandboxID)
+	}
+	base := fmt.Sprintf("http://%s:%d", p.config.NodeHost, port)
+	showHidden := true
+	body, _ := json.Marshal(map[string]any{
+		"path":        path,
+		"max_depth":   maxDepth,
+		"show_hidden": showHidden,
+	})
+	req, _ := http.NewRequestWithContext(ctx, "POST", base+"/v1/file/list", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if p.config.RuntimeAPIKey != "" {
+		req.Header.Set("X-Sandbox-API-Key", p.config.RuntimeAPIKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return []listDirEntry{}, nil // dir doesn't exist == no bindings yet
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("file/list %s: status %d", path, resp.StatusCode)
+	}
+	// Runtime envelopes the body under {"data": {"files": [...]}}. Each
+	// file row has at least `name`, `path`, `is_directory`.
+	var wrap struct {
+		Data struct {
+			Files []struct {
+				Name        string `json:"name"`
+				Path        string `json:"path"`
+				IsDirectory bool   `json:"is_directory"`
+			} `json:"files"`
+		} `json:"data"`
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &wrap); err != nil {
+		return nil, fmt.Errorf("decode file/list: %w", err)
+	}
+	out := make([]listDirEntry, 0, len(wrap.Data.Files))
+	for _, f := range wrap.Data.Files {
+		out = append(out, listDirEntry{Name: f.Name, Path: f.Path, IsDir: f.IsDirectory})
+	}
+	return out, nil
+}
+
+// handleBindingResolve is GET /api/sandboxes/{id}/bindings/env. Reads
+// the lockfile AND the credential files, returning the full env map.
+// This is the privileged endpoint the control plane calls at deploy
+// time to expand inheritance. Routed under bindings/env (not query
+// param) so it's obviously separate from the safe list endpoint.
+//
+// Sensitive: keep the route auth-gated (the broker already requires a
+// cluster admin cert to reach the provisioner; runtime tools cannot
+// reach this from inside a sandbox).
+func (p *Provisioner) handleBindingResolve(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errcode.WriteJSON(w, errcode.New(errcode.BindingInvalidRequest, "sandbox id missing in path"))
+		return
+	}
+	lock, err := p.readLockfile(r.Context(), id)
+	if err != nil {
+		errcode.WriteJSON(w, errcode.New(errcode.BindingInternal, "read lockfile: %v", err))
+		return
+	}
+	env := map[string]string{}
+	sources := map[string]string{} // key → service
+	if lock != nil {
+		for _, b := range lock.Bindings {
+			for _, k := range b.EnvVars {
+				path := fmt.Sprintf("/var/run/agentry/%s/%s", b.Service, k)
+				raw, ferr := p.runtimeFileRead(r.Context(), id, path)
+				if ferr != nil || len(raw) == 0 {
+					continue // skip — caller can't override what doesn't exist
+				}
+				env[k] = string(raw)
+				sources[k] = b.Service
+			}
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"env":     env,
+		"sources": sources,
+	})
 }
 
 // handleBindingCreate is POST /api/sandboxes/{id}/bindings. Looks up

@@ -316,6 +316,109 @@ Pattern, ALWAYS:
 4. Start the project (`project_start`) AFTER the bind so the shell
    shim picks up the env on launch.
 
+## Sharing one service across many apps — namespace OR clobber
+
+The user binds ONE mongo / postgres / redis / s3 per cluster. Every
+sandbox AND every deployed app inherits the SAME credentials, which
+means the SAME data store. Two apps that both write to a collection
+called `users` will overwrite each other.
+
+**Rule: every app namespaces its writes under its own name. Never use
+default db names, default schemas, or bare collection / key names.**
+
+The platform stamps `AGENTRY_APP_NAME` into every app's env — the
+deployment slug in prod, the sandbox id in dev. Read it; don't
+override it. The fallback `?? "dev"` exists so a brand-new sandbox
+boots without crashing, NOT so apps share a "dev" namespace by
+accident.
+
+### MongoDB
+
+DON'T:
+
+```ts
+const db = client.db();              // empty → "test" DB or worse
+const db = client.db("appdb");       // shared across every app
+```
+
+DO:
+
+```ts
+const dbName = process.env.AGENTRY_APP_NAME ?? "dev";
+const db = client.db(dbName);
+// optional: assert at boot that we got a real name
+if (process.env.NODE_ENV === "production" && dbName === "dev") {
+  throw new Error("AGENTRY_APP_NAME must be set in production");
+}
+```
+
+### Postgres / MySQL
+
+Use a per-app schema. Create it at boot, then set `search_path`:
+
+```ts
+const ns = process.env.AGENTRY_APP_NAME ?? "dev";
+// Run once at boot. CREATE IF NOT EXISTS is idempotent + safe to
+// re-run, so you don't need a separate migration step for it.
+await sql`CREATE SCHEMA IF NOT EXISTS ${sql(ns)}`;
+await sql`SET search_path TO ${sql(ns)}, public`;
+// Every CREATE TABLE / SELECT now lands inside the per-app schema.
+```
+
+If you can't make schemas work (some managed Postgres tiers restrict
+DDL), prefix table names instead: `${ns}_users`, `${ns}_sessions`.
+
+### Redis
+
+Prefix every key with the app namespace. A tiny helper keeps it
+unmissable at the call site:
+
+```ts
+const ns = process.env.AGENTRY_APP_NAME ?? "dev";
+const k = (suffix: string) => `${ns}:${suffix}`;
+
+await redis.set(k(`session:${id}`), token);
+await redis.zadd(k("leaderboard"), score, userId);
+```
+
+### S3 / object storage
+
+Every object key gets the app prefix; the bucket is shared:
+
+```ts
+const prefix = process.env.AGENTRY_APP_NAME ?? "dev";
+await s3.send(new PutObjectCommand({
+  Bucket: process.env.AWS_S3_BUCKET!,
+  Key: `${prefix}/uploads/${file}`,
+  Body,
+}));
+```
+
+When listing, scope to the prefix:
+
+```ts
+const out = await s3.send(new ListObjectsV2Command({
+  Bucket, Prefix: `${prefix}/`,
+}));
+```
+
+### ClickHouse
+
+Same idea as Mongo: pick the DATABASE explicitly.
+
+```ts
+const database = process.env.AGENTRY_APP_NAME ?? "dev";
+const client = createClient({ url: process.env.CLICKHOUSE_URL!, database });
+// CREATE DATABASE IF NOT EXISTS at boot, then create tables inside it.
+```
+
+### Exception: services that already namespace by API key
+
+Stripe, OpenAI, Anthropic, SMTP — the user's KEY is the namespace.
+Two apps sharing the same Stripe key share the same customer ledger,
+so apps using these services should ask the user for a SEPARATE key
+per app rather than trying to multiplex one key across many apps.
+
 ## Recipe — end-to-end
 
 Do these in order. **Don't skip step 0.**
@@ -439,6 +542,131 @@ those three checks fail, you haven't finished — keep going.
   body, query string. Parse it; don't trust it.
 - **One file, one component** — `page.tsx` for the route; everything
   else in `components/`. Hard cap ~100 lines.
+
+## Running behind the bridge — the rules apps trip on
+
+Whether the user opens your app via a **Share link** (preview) or
+**Deploy** (durable URL), the app is reachable through the agentry
+bridge at `https://<name>.agentry.run`. The bridge terminates TLS at
+the edge and forwards plain HTTP to your container. That introduces
+four classes of bugs apps written for "I'll just run it on localhost"
+have. Bake these in from day one or you'll spend an hour debugging
+why "the cookies don't stick" or "the OAuth redirect goes to
+localhost:3000".
+
+### 1. Bind to 0.0.0.0, not localhost.
+
+The runtime can't see a server bound to `127.0.0.1`. The default
+manifest already does `--hostname 0.0.0.0`. Don't change it. Same for
+`next start` in the production image — pass `-H 0.0.0.0`. Same for
+any other server you start (express, fastify, gunicorn, …).
+
+### 2. Trust the forwarded headers.
+
+The browser sees `https://your-app.agentry.run`. Your app sees
+`http://0.0.0.0:3000`. To bridge that gap the bridge stamps:
+
+- `X-Forwarded-Proto: https`
+- `X-Forwarded-Host: your-app.agentry.run`
+- `X-Forwarded-For: <client ip>`
+
+Read these — never `req.host` / `req.protocol` directly — whenever
+you need to know the public URL of THIS request.
+
+**Next.js (App Router):**
+
+```ts
+// src/lib/url.ts
+import { headers } from "next/headers";
+
+export async function publicBaseURL(): Promise<string> {
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  return `${proto}://${host}`;
+}
+```
+
+Use it any time you build an absolute URL: OAuth callbacks, email
+links, social-share preview cards, payment-provider return URLs, sitemap
+entries, Open Graph tags. NEVER paste `http://localhost:3000` into
+generated HTML or emails.
+
+**Express / fastify**: `app.set("trust proxy", 1)` once at boot;
+then `req.protocol`, `req.hostname` reflect the forwarded values.
+
+### 3. Cookies — Secure, SameSite, no Domain.
+
+The browser sees the app over HTTPS, so:
+
+- `Secure: true` is REQUIRED on session/auth cookies. Without it the
+  browser drops them on the first navigation.
+- `SameSite: "lax"` is the right default — works with normal
+  navigation and OAuth redirects. `"strict"` breaks OAuth callbacks
+  (the redirect counts as cross-site). `"none"` requires Secure
+  anyway, and you only need it for cross-origin iframes (rare).
+- `HttpOnly: true` for anything sensitive (session id, auth token).
+- DO NOT set a `Domain` attribute. Let the browser scope the cookie
+  to `<name>.agentry.run`. Setting `Domain=.agentry.run` is illegal
+  cross-tenant and will be rejected; setting `Domain=localhost` won't
+  match the deploy URL.
+
+Next.js example:
+
+```ts
+import { cookies } from "next/headers";
+
+(await cookies()).set("sid", sessionToken, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  path: "/",
+  maxAge: 60 * 60 * 24 * 7,
+});
+```
+
+If you're using `next-auth` / Auth.js, set `AUTH_TRUST_HOST=true` in
+the deploy env. Otherwise it'll refuse to set cookies because the
+host isn't on its allow-list.
+
+### 4. Don't hardcode the URL.
+
+Common offenders:
+
+- `NEXTAUTH_URL=http://localhost:3000` baked into `.env` →
+  authentication redirects loop back to localhost in prod.
+- Stripe `success_url: "http://localhost:3000/thanks"` → user lands
+  on a dead page after checkout.
+- OAuth provider's allowed-callback list pinned to localhost → prod
+  rejects with `redirect_uri_mismatch`.
+
+The fix: compute these from `publicBaseURL()` (or the equivalent in
+your framework), and set the corresponding env var in the deploy
+form when you can't compute it.
+
+`process.env.NEXT_PUBLIC_APP_URL` is the conventional name we use —
+set it in the deploy env editor to the public URL once the deploy
+URL is known. Code reads `process.env.NEXT_PUBLIC_APP_URL ?? await
+publicBaseURL()` and is correct in both modes.
+
+### 5. WebSockets, streaming, long requests — all fine.
+
+The bridge proxies WebSockets and chunked / streaming responses
+unchanged. Server-Sent Events work. Long-polling works. You don't
+need anything special; if a request would have worked on localhost,
+it works through the bridge.
+
+### Sanity check before telling the user "it's live"
+
+After the deploy goes green:
+
+```
+curl -sI https://<name>.agentry.run/
+```
+
+Expect a 200 (or 3xx that lands on a 200). If you get a redirect to
+`http://localhost:3000/...` — you violated rule #2 or #4 above; fix
+the code, redeploy.
 
 ## Common pitfalls
 

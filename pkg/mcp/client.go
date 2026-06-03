@@ -72,6 +72,27 @@ type SandboxInfo struct {
 	ExpiresAt  string `json:"expires_at,omitempty"`
 }
 
+// SandboxBinding is the no-values shape returned by GET
+// /api/sandboxes/{id}/bindings. The dashboard + MCP both consume
+// this; the env-var-NAMES tell the LLM what to read from process.env,
+// VALUES never cross the wire.
+type SandboxBinding struct {
+	Service string   `json:"service"`
+	Version string   `json:"version,omitempty"`
+	EnvVars []string `json:"env_vars"`
+}
+
+// SandboxCreateResult is what sandbox_create returns to the LLM. It
+// wraps SandboxInfo with the post-create bindings snapshot so the
+// model can see, on the very first tool response, which services are
+// already wired — and skip spinning up parallel in-process versions
+// (mongodb-memory-server, embedded sqlite, etc.) when the user has
+// staged a real binding.
+type SandboxCreateResult struct {
+	SandboxInfo
+	Bindings []SandboxBinding `json:"bindings"`
+}
+
 // CreateRequest is the JSON body for POST /api/sandboxes. Only the fields
 // MCP currently surfaces are included; richer args (resources, volumes)
 // can pass through as `extra` raw JSON if needed.
@@ -164,6 +185,20 @@ func (c *Client) BindService(ctx context.Context, sandboxID, service, version st
 	return out, err
 }
 
+// ListBindings calls GET /api/sandboxes/{id}/bindings. Returns the
+// post-bind snapshot the provisioner builds by scanning
+// /var/run/agentry/<svc>/<env-var> inside the sandbox. Used by
+// sandbox_create's response so the LLM sees auto-applied cluster-
+// default binds without having to ask. Never includes values.
+func (c *Client) ListBindings(ctx context.Context, sandboxID string) ([]SandboxBinding, error) {
+	var wrap struct {
+		Bindings []SandboxBinding `json:"bindings"`
+	}
+	err := c.do(ctx, http.MethodGet,
+		c.provisionerURL+"/api/sandboxes/"+sandboxID+"/bindings", nil, &wrap)
+	return wrap.Bindings, err
+}
+
 // SetSecret calls POST /api/sandboxes/{id}/secrets. Source defaults
 // to "mcp" — the provisioner uses this to reject secret-shaped
 // values (forces them through `agentry env set` on the user's terminal).
@@ -196,28 +231,6 @@ type BuildResponse struct {
 func (c *Client) Build(ctx context.Context, sandboxID string) (BuildResponse, error) {
 	var out BuildResponse
 	err := c.do(ctx, http.MethodPost, c.provisionerURL+"/api/sandboxes/"+sandboxID+"/build", map[string]any{}, &out)
-	return out, err
-}
-
-// DeployResponse is what the deploy endpoint returns. The stub XDP
-// at the broker synthesises this; production swaps in real values.
-type DeployResponse struct {
-	DeploymentID string `json:"deployment_id"`
-	Cluster      string `json:"cluster"`
-	Name         string `json:"name"`
-	PublicURL    string `json:"public_url"`
-	Status       string `json:"status"`
-	CreatedAt    string `json:"created_at"`
-}
-
-// Deploy calls POST /api/sandboxes/{id}/deploy. Builds implicitly.
-func (c *Client) Deploy(ctx context.Context, sandboxID, cluster string) (DeployResponse, error) {
-	body := map[string]any{}
-	if cluster != "" {
-		body["cluster"] = cluster
-	}
-	var out DeployResponse
-	err := c.do(ctx, http.MethodPost, c.provisionerURL+"/api/sandboxes/"+sandboxID+"/deploy", body, &out)
 	return out, err
 }
 
