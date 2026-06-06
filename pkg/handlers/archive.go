@@ -22,7 +22,15 @@ func ArchiveCreateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GNU tar applies --exclude patterns positionally — they must come
+	// BEFORE the input files. Place them right after the output spec.
 	args := []string{"czf", req.Output}
+	for _, p := range req.Exclude {
+		if p == "" {
+			continue
+		}
+		args = append(args, "--exclude="+p)
+	}
 	args = append(args, req.Files...)
 	out, err := exec.Command("tar", args...).CombinedOutput()
 	if err != nil {

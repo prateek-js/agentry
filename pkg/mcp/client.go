@@ -100,6 +100,11 @@ type CreateRequest struct {
 	SandboxID    string `json:"sandbox_id"`
 	TTLSeconds   int64  `json:"ttl_seconds,omitempty"`
 	RuntimeClass string `json:"runtime_class,omitempty"`
+
+	// ReuseExisting opts into "attach to whatever sandbox already
+	// has this id" semantics. Default false; see the provisioner's
+	// CreateRequest doc for the rationale.
+	ReuseExisting bool `json:"reuse_existing,omitempty"`
 }
 
 // RenewRequest is the JSON body for POST /api/sandboxes/{id}/renew.

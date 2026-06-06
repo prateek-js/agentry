@@ -45,9 +45,11 @@ func Register(server *mcp.Server, c *Client) {
 	// — Lifecycle ───────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_create",
-		Description: "Spin up an isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id`, and `bindings` — the services the operator has pre-wired into this sandbox (each entry lists the env var names you read at runtime). " +
+		Description: "Spin up a fresh isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id` (the ACTUAL allocated id — may differ from what you asked for; see below), and `bindings` — the services the operator has pre-wired into this sandbox (each entry lists the env var names you read at runtime). " +
 			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ the `bindings` array — if a service is listed there, your code reads the env vars verbatim; DO NOT bind it again, DO NOT spin up an in-process substitute. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
-			"Pass `sandbox_id` for stable identity across calls, or omit for a generated one.",
+			"Pass any descriptive `sandbox_id` (e.g. \"ecommerce-store\"). If that name is already taken by an unrelated sandbox, the server auto-allocates a fresh suffixed name (e.g. \"ecommerce-store-7f2a\") so you DON'T overwrite the existing one. " +
+			"ALWAYS use the `sandbox_id` from the RESPONSE for every follow-up tool call in this conversation — never the one you passed in. " +
+			"Set `reuse_existing: true` only when you genuinely want to attach to an existing sandbox by name (rare; typical use case is a CLI `attach` flow, not an LLM creating a new project).",
 	}, sandboxCreate(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_list",
@@ -193,9 +195,14 @@ func Register(server *mcp.Server, c *Client) {
 // --- arg structs ----------------------------------------------------------
 
 type sandboxCreateArgs struct {
-	SandboxID    string `json:"sandbox_id" jsonschema:"stable identity for the sandbox"`
+	SandboxID    string `json:"sandbox_id" jsonschema:"requested name (descriptive). If taken, server auto-suffixes — use the sandbox_id from the response, not this value, for follow-up calls"`
 	TTLSeconds   int64  `json:"ttl_seconds,omitempty" jsonschema:"reaper deadline in seconds; 0 = no TTL"`
 	RuntimeClass string `json:"runtime_class,omitempty" jsonschema:"Kubernetes RuntimeClass (gvisor / kata / firecracker)"`
+
+	// ReuseExisting opts into the rare "attach to whatever sandbox
+	// already has this name" semantics. Almost always false for an
+	// LLM-driven flow — see the tool description above.
+	ReuseExisting bool `json:"reuse_existing,omitempty" jsonschema:"true ONLY when intentionally re-attaching to an existing sandbox by name; default false"`
 }
 
 type sandboxListArgs struct {
@@ -327,9 +334,10 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxCreat
 			return errResult("sandbox_id is required"), SandboxCreateResult{}, nil
 		}
 		info, err := c.CreateSandbox(ctx, CreateRequest{
-			SandboxID:    a.SandboxID,
-			TTLSeconds:   a.TTLSeconds,
-			RuntimeClass: a.RuntimeClass,
+			SandboxID:     a.SandboxID,
+			TTLSeconds:    a.TTLSeconds,
+			RuntimeClass:  a.RuntimeClass,
+			ReuseExisting: a.ReuseExisting,
 		})
 		if err != nil {
 			return errResult(err.Error()), SandboxCreateResult{}, nil
@@ -377,6 +385,7 @@ func sandboxList(c *Client) mcp.ToolHandlerFor[sandboxListArgs, any] {
 		return jsonResult(out), out, nil
 	}
 }
+
 
 func buildImage(c *Client) mcp.ToolHandlerFor[sandboxIDOnlyArgs, BuildResponse] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxIDOnlyArgs) (*mcp.CallToolResult, BuildResponse, error) {

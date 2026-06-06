@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/agentry/agentry/pkg/bridge"
@@ -31,57 +32,63 @@ import (
 	"github.com/agentry/agentry/pkg/tunnel"
 )
 
+// tabWriter is the shared tab-aligned writer used by every `ls` /
+// `status` command. Centralised so column padding is consistent across
+// the CLI — the polish bar says "if it looks like it was thrown
+// together by three different people, it was". Tabs separate columns;
+// padding 2 spaces; min width 2. minwidth=0 lets short columns hug.
+func tabWriter() *tabwriter.Writer {
+	return tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+}
+
 const usage = `agentry — laptop-side daemon + CLI for agentry.run
 
-Setup:
-  agentry login                            browser auth — the usual path
-  agentry logout                           drop + revoke the local token
-  agentry init --app-url URL --token TOK [--name NAME]
-                                           legacy device-cert enrollment
-  agentry status
+GETTING STARTED
+  agentry login                            authorize this machine (browser flow)
+  agentry init --app-url URL --token TOK   enroll the device cert (after login;
+                                           token comes from "Add this machine")
+  agentry server                           pick the server to drive
+  agentry status                           show config + auth + selected server
 
-Cluster (the box running your sandboxes):
-  agentry cluster                          interactive picker
-  agentry cluster ls
-  agentry cluster use <name>
-  agentry cluster current
+DAILY USE
+  agentry sandbox ls                       list sandboxes on the current server
+  agentry sandbox use <id>                 pin <id> so other commands omit it
+  agentry sandbox current                  print the pinned sandbox
+  agentry sandbox rm <id>                  delete a sandbox
 
-Sandbox (a container on the current cluster):
-  agentry sandbox ls
-  agentry sandbox use <id>                 pin <id> as default for env/forward
-  agentry sandbox current
-  agentry sandbox rm <id>
-
-MCP (the integration point for Claude Desktop / Cursor / Roo):
-  agentry mcp                              MCP server bound to stdin/stdout
-                                           (alias: agentry stdio)
-
-Port forwarding:
-  agentry forward [<sandbox>:]<port> [--local PORT]
-                                           sandbox defaults to current
-
-Sandbox env vars:
-  agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE: hidden prompt)
+  agentry pull [<sandbox>]                 download the sandbox to ./<sandbox>/
+  agentry forward [<sandbox>:]<port>       expose a sandbox port on localhost
+  agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
 
-Service catalog (cluster-scoped):
-  agentry service ls
-  agentry service bind <service>           cluster default; applied on every create
-  agentry service bind <service> --from-env
-  agentry service bind --sandbox <id> <service>     one-shot override
-  agentry service binds                    list cluster defaults stored locally
+EDITOR INTEGRATION
+  agentry mcp                              MCP server on stdin/stdout
+                                           (alias: agentry stdio)
+
+SERVER (the box running your sandboxes)
+  agentry server ls                        non-interactive list
+  agentry server use <name>                set the server
+  agentry server current                   print the server
+
+SERVICE BINDINGS (postgres, openai, …)
+  agentry service ls                       list available services in the catalog
+  agentry service bind <service>           bind as server default (interactive)
+  agentry service bind <service> --from-env       read values from shell env
+  agentry service bind --sandbox <id> <service>   one-shot, this sandbox only
+  agentry service binds                    list server defaults stored locally
   agentry service unbind <service>
 
-Shared ports (expose a live sandbox port at a *.agentry.live URL):
-  agentry share ls
-  agentry share                            (use the dashboard for now)
+SHARES + DEPLOYS
+  Share a live sandbox port (*.agentry.live) or deploy a built image:
+  both live in the dashboard at https://app.agentry.run.
 
-Deployments (build prod image + run as a target — coming soon):
-  agentry deploy ...
+OTHER
+  agentry logout                           drop + revoke the local token
+  agentry version                          print the build version
+  agentry help [<command>]                 detailed help for a command
 
-Configuration: ~/.agentry/agentry.json. Pinned sandbox: ~/.agentry/state.json.
-Run "agentry login" once to authorize this machine, "agentry cluster" to
-pick a target, then point your editor at "agentry mcp".
+Configuration:   ~/.agentry/agentry.json
+Pinned sandbox:  ~/.agentry/state.json
 `
 
 func main() {
@@ -94,51 +101,83 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	switch os.Args[1] {
+	os.Exit(dispatch(os.Args[1:]))
+}
+
+// dispatch is the body of main() lifted to its own function so tests
+// can exercise it without forking a subprocess. Returns the exit code
+// the binary should use.
+func dispatch(args []string) int {
+	switch args[0] {
 	case "login":
-		os.Exit(cmdLogin(os.Args[2:]))
+		return cmdLogin(args[1:])
 	case "logout":
-		os.Exit(cmdLogout(os.Args[2:]))
+		return cmdLogout(args[1:])
 	case "init":
-		// `init` is now an internal step that `login` triggers once
-		// it has a PAT (it enrolls a device cert against the app).
-		// Kept as a separate subcommand for back-compat scripts.
-		os.Exit(cmdInit(os.Args[2:]))
-	case "cluster":
-		os.Exit(cmdCluster(os.Args[2:]))
+		// Enrolls the laptop's device cert against agentry-app using
+		// the token shown on the dashboard's "Add this machine" panel.
+		// Run after `agentry login`, before `agentry mcp`.
+		return cmdInit(args[1:])
+	case "server", "cluster":
+		// "cluster" is the legacy name; "server" is what users see now.
+		// Both wire to the same handler so existing scripts keep working.
+		return cmdCluster(args[1:])
 	case "sandbox":
-		os.Exit(cmdSandbox(os.Args[2:]))
+		return cmdSandbox(args[1:])
 	case "mcp", "stdio":
 		// stdio is the legacy name kept as an alias so existing
 		// Claude Desktop / Roo configs keep working.
-		os.Exit(cmdMCP(os.Args[2:]))
+		return cmdMCP(args[1:])
 	case "forward":
-		os.Exit(cmdForward(os.Args[2:]))
+		return cmdForward(args[1:])
 	case "env":
-		os.Exit(cmdEnv(os.Args[2:]))
+		return cmdEnv(args[1:])
+	case "pull":
+		return cmdPull(args[1:])
 	case "share":
-		os.Exit(cmdShare(os.Args[2:]))
-	case "deployment", "deploy":
-		// Real Deploy lands soon (#118/#120). Until then, point users
-		// at `agentry share` for live-port URLs or the dashboard for
-		// the real Deploy flow (also coming there). Exit non-zero so
-		// scripts notice.
 		fmt.Fprintln(os.Stderr,
-			"agentry deploy/deployment is coming soon —\n"+
-				"  for sharing a sandbox port to a URL, use `agentry share` or the dashboard.")
-		os.Exit(2)
+			"agentry share moved to the dashboard:\n"+
+				"  https://app.agentry.run")
+		return 2
+	case "deploy", "deployment":
+		fmt.Fprintln(os.Stderr,
+			"agentry deploy moved to the dashboard:\n"+
+				"  https://app.agentry.run")
+		return 2
 	case "service":
-		os.Exit(cmdService(os.Args[2:]))
+		return cmdService(args[1:])
 	case "status":
-		os.Exit(cmdStatus(os.Args[2:]))
+		return cmdStatus(args[1:])
+	case "version", "-v", "--version":
+		return cmdVersion(args[1:])
 	case "help", "-h", "--help":
-		fmt.Fprint(os.Stdout, usage)
-		os.Exit(0)
+		return cmdHelp(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "agentry: unknown subcommand %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "agentry: unknown subcommand %q\n\n", args[0])
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
+}
+
+// cmdHelp dispatches `agentry help [<command>]`. No arg → top-level
+// usage. Arg → re-route the command with `--help` so each subcommand's
+// own help block prints (where it has one). For commands without
+// dedicated help text, falls back to the top-level usage.
+func cmdHelp(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stdout, usage)
+		return 0
+	}
+	// Hand off to the subcommand with --help. Subcommands that don't
+	// recognise --help land in their default branch (which we treat
+	// as "show top-level usage" below). The ones with proper help
+	// blocks (service, login, init) print and exit cleanly.
+	rc := dispatch([]string{args[0], "--help"})
+	if rc != 0 {
+		fmt.Fprint(os.Stdout, usage)
+		return 0
+	}
+	return rc
 }
 
 // cmdMCP is the workhorse: read config, dial broker, run the MCP
@@ -246,18 +285,31 @@ func cmdMCP(_ []string) int {
 
 // cmdStatus prints what the daemon would do if started. Does NOT dial
 // the broker — it's a config-readback only, useful for "is my install
-// healthy" before `agentry mcp` runs.
+// healthy" before `agentry mcp` runs. The user + org line is filled by
+// `agentry login`'s callback; no extra round-trip on each `status`.
 func cmdStatus(_ []string) int {
 	cfg, path, err := LoadConfig()
 	if err != nil {
-		return die("load config: %v (run `agentry init` first; tried %s)", err, path)
+		return die("load config: %v (run `agentry login` first; tried %s)", err, path)
 	}
 	state := LoadState()
-	fmt.Printf("config:   %s\n", path)
-	fmt.Printf("device:   %s\n", cfg.DeviceID)
-	fmt.Printf("broker:   %s\n", emptyAs(cfg.BrokerURL, "(not set; run `agentry init`)"))
-	fmt.Printf("cluster:  %s\n", emptyAs(cfg.Cluster, "(not set; run `agentry cluster`)"))
-	fmt.Printf("sandbox:  %s\n", emptyAs(state.CurrentSandbox, "(not pinned; run `agentry sandbox use <id>`)"))
+	tw := tabWriter()
+	defer tw.Flush()
+
+	who := "(not logged in; run `agentry login`)"
+	if cfg.UserEmail != "" {
+		who = cfg.UserEmail
+		if cfg.Org != "" {
+			who = cfg.UserEmail + "  in " + cfg.Org
+		}
+	}
+	fmt.Fprintf(tw, "logged in as:\t%s\n", who)
+	fmt.Fprintf(tw, "config file:\t%s\n", path)
+	fmt.Fprintf(tw, "app URL:\t%s\n", emptyAs(cfg.AppURL, "(not set; run `agentry login`)"))
+	fmt.Fprintf(tw, "broker URL:\t%s\n", emptyAs(cfg.BrokerURL, "(not set; run `agentry init` after login)"))
+	fmt.Fprintf(tw, "device ID:\t%s\n", emptyAs(cfg.DeviceID, "(none)"))
+	fmt.Fprintf(tw, "server:\t%s\n", emptyAs(cfg.Cluster, "(not set; run `agentry server`)"))
+	fmt.Fprintf(tw, "sandbox:\t%s\n", emptyAs(state.CurrentSandbox, "(not pinned; run `agentry sandbox use <id>`)"))
 	return 0
 }
 

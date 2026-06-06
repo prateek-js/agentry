@@ -122,19 +122,26 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("PUT /tunnel", b.handleTunnel)
 	mux.HandleFunc("GET /api/clusters", b.handleClustersList)
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes", b.handleClusterSandboxes)
+	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxGet)
 	mux.HandleFunc("DELETE /api/clusters/{id}/sandboxes/{sid}", b.handleClusterSandboxDelete)
+	mux.HandleFunc("POST /api/clusters/{id}/sandboxes/{sid}/renew", b.handleClusterSandboxRenew)
 	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/runtime/{rest...}", b.handleClusterSandboxRuntime)
 	// Generic deploy-build + deployment lifecycle proxy. Same shape as
 	// the runtime wildcard above, but the cluster-side path lives under
 	// /api/deployments (deploy run/get/stop) and /api/sandboxes/{sid}/
 	// deploy-build. Used by the deployment orchestrator on agentry-app.
 	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/deploy-build", b.handleClusterDeployBuild)
+	mux.HandleFunc("/api/clusters/{id}/sandboxes/{sid}/deploy-push", b.handleClusterDeployPush)
 	// Bindings: GET ".../sandboxes/{sid}/bindings" returns names + source
 	// services only (no values); GET ".../bindings/env" is the privileged
 	// resolved-env path used by the control plane at deploy time. Both
 	// proxy through to the provisioner verbatim.
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}/bindings", b.handleClusterSandboxBindings)
 	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}/bindings/env", b.handleClusterSandboxBindingsEnv)
+	// User-staged per-sandbox secrets. GET returns names only; POST
+	// writes a value the runtime exports on next shell start.
+	mux.HandleFunc("GET /api/clusters/{id}/sandboxes/{sid}/secrets", b.handleClusterSandboxSecretsList)
+	mux.HandleFunc("POST /api/clusters/{id}/sandboxes/{sid}/secrets", b.handleClusterSandboxSecretSet)
 	mux.HandleFunc("/api/clusters/{id}/deployments", b.handleClusterDeploymentsRoot)
 	mux.HandleFunc("/api/clusters/{id}/deployments/{rest...}", b.handleClusterDeployments)
 	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
@@ -296,12 +303,37 @@ func (b *Broker) handleClusterSandboxDelete(w http.ResponseWriter, r *http.Reque
 	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes/"+r.PathValue("sid"))
 }
 
+// handleClusterSandboxGet proxies a single-sandbox lookup. Returns
+// SandboxInfo (sandbox_id, sandbox_url, status, expires_at) — used by
+// the dashboard detail page to surface the expiry timestamp and
+// enable the "Extend" affordance.
+func (b *Broker) handleClusterSandboxGet(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/sandboxes/"+r.PathValue("sid"))
+}
+
+// handleClusterSandboxRenew pushes the sandbox's reaper deadline out
+// by ttl_seconds (taken from the body). The provisioner reuses the
+// prior TTL if the body omits ttl_seconds, but our control plane
+// always sends an explicit value so the user's intent is unambiguous.
+func (b *Broker) handleClusterSandboxRenew(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/renew")
+}
+
 // handleClusterDeployBuild proxies the deploy-build call into the
 // sandbox's provisioner. Used by the deployment orchestrator to kick
 // off image build inside the source sandbox.
 func (b *Broker) handleClusterDeployBuild(w http.ResponseWriter, r *http.Request) {
 	b.proxyToCluster(w, r, r.PathValue("id"),
 		"/api/sandboxes/"+r.PathValue("sid")+"/deploy-build")
+}
+
+// handleClusterDeployPush proxies the deploy-push call. Body carries
+// a decrypted registry token in transit — the bridge sees the bytes
+// but doesn't parse them, and the tunnel underneath is mTLS-gated.
+func (b *Broker) handleClusterDeployPush(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/deploy-push")
 }
 
 // handleClusterSandboxBindings proxies the "what's bound on this
@@ -319,6 +351,24 @@ func (b *Broker) handleClusterSandboxBindings(w http.ResponseWriter, r *http.Req
 func (b *Broker) handleClusterSandboxBindingsEnv(w http.ResponseWriter, r *http.Request) {
 	b.proxyToCluster(w, r, r.PathValue("id"),
 		"/api/sandboxes/"+r.PathValue("sid")+"/bindings/env")
+}
+
+// handleClusterSandboxSecretsList proxies the GET names-only secrets
+// list. Powers the dashboard's per-sandbox "Secrets" section so the
+// user can see what's staged without ever revealing values.
+func (b *Broker) handleClusterSandboxSecretsList(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/secrets")
+}
+
+// handleClusterSandboxSecretSet proxies POST with {name, value}.
+// The provisioner writes the value to /var/run/agentry/secrets/<NAME>
+// inside the sandbox; the shell shim exports it on next process start.
+// agentry-app forwards body unchanged — values never appear in bridge
+// logs because the proxy is a byte-stream forward (no JSON parse here).
+func (b *Broker) handleClusterSandboxSecretSet(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"),
+		"/api/sandboxes/"+r.PathValue("sid")+"/secrets")
 }
 
 // handleClusterDeployments{,Root} proxy deployment lifecycle calls

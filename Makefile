@@ -16,7 +16,7 @@ PROVISIONER_IMG := ghcr.io/agentry-ai/sandbox-provisioner:latest
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
-VERSION ?= v0.2.0
+VERSION ?= v0.5.3
 RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64
 
 # Multi-arch builder for GHCR images. Created once with

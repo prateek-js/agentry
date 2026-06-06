@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -140,6 +141,22 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("cluster %q is offline", route.ClusterID), http.StatusBadGateway)
 		return
 	}
+	// Defense in depth. route.OrgID is stamped by the control plane;
+	// cluster.orgID comes from the cluster's cert URI SAN at handshake.
+	// They MUST agree — a deployment in org A can only route through a
+	// cluster in org A. If they disagree, something is wrong upstream
+	// (corrupted route push, mis-issued cert, attempted lateral move
+	// across orgs). Fail closed and log loudly: the alternative is
+	// serving one org's deployment traffic out of another org's cluster,
+	// which is the worst class of cross-tenant bug. Skip the check in
+	// DevMode because cluster.orgID is unset there.
+	if !b.cfg.DevMode && route.OrgID != "" && route.OrgID != cluster.orgID {
+		log.Printf("bridge: cross-org deploy route refused: host=%s route.org=%s cluster=%s cluster.org=%s",
+			host, route.OrgID, route.ClusterID, cluster.orgID)
+		http.Error(w, "deployment route is inconsistent with cluster ownership",
+			http.StatusBadGateway)
+		return
+	}
 
 	// Build the upstream path based on Kind:
 	//   share      → /api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>
@@ -198,9 +215,35 @@ type deployRoutesEnvelope struct {
 	Routes []DeployRoute `json:"routes"`
 }
 
-func (b *Broker) handleDeployRoutesGet(w http.ResponseWriter, _ *http.Request) {
+// requireAdmin gates an admin-only endpoint. The bridge's mTLS layer
+// requires SOME valid cert; this is the second gate that distinguishes
+// admin certs (URI SAN = urn:agentry:admin) from regular device certs
+// (URI SAN = urn:agentry:org:<id>). Without this gate, any signed-in
+// user with a device cert could ReplaceAll the route table — wiping
+// every other org's deploy URLs or pointing them at attacker clusters.
+//
+// DevMode skips the check (local-loop testing has no certs).
+//
+// Returns true when the request is allowed to proceed; on false the
+// handler has already written a 403 response.
+func (b *Broker) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if b.cfg.DevMode {
+		return true
+	}
+	_, admin := peerOrgIdentity(r)
+	if !admin {
+		http.Error(w, "admin cert required for this endpoint", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (b *Broker) handleDeployRoutesGet(w http.ResponseWriter, r *http.Request) {
 	if b.deploy == nil {
 		http.Error(w, "deploy registry not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	if !b.requireAdmin(w, r) {
 		return
 	}
 	_ = writeJSON(w, deployRoutesEnvelope{Routes: b.deploy.All()})
@@ -209,6 +252,9 @@ func (b *Broker) handleDeployRoutesGet(w http.ResponseWriter, _ *http.Request) {
 func (b *Broker) handleDeployRoutesPut(w http.ResponseWriter, r *http.Request) {
 	if b.deploy == nil {
 		http.Error(w, "deploy registry not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	if !b.requireAdmin(w, r) {
 		return
 	}
 	var body deployRoutesEnvelope

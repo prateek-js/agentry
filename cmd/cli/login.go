@@ -37,11 +37,29 @@ func cmdLogin(args []string) int {
 	fs := flag.NewFlagSet("agentry login", flag.ContinueOnError)
 	appURL := fs.String("app-url", defaultAppURL(), "agentry control plane (e.g. https://app.agentry.run)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the browser flow to complete")
+	force := fs.Bool("force", false, "re-authenticate even if a token is already on disk")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *appURL == "" {
 		return die("--app-url is required (or set AGENTRY_APP_URL)")
+	}
+
+	// Quick no-op when there's already a working-looking token. Saves a
+	// browser round-trip every time a user runs `agentry login` to
+	// confirm they're set up. We can't tell server-side if the token's
+	// revoked without a network call, so this is a heuristic — pass
+	// --force when in doubt.
+	if !*force {
+		if cfg, _, err := LoadConfig(); err == nil && cfg.APIToken != "" {
+			who := emptyAs(cfg.UserEmail, "(unknown user)")
+			if cfg.Org != "" {
+				who = who + " (" + cfg.Org + ")"
+			}
+			fmt.Printf("agentry: already logged in as %s\n", who)
+			fmt.Println("        pass --force to re-authenticate")
+			return 0
+		}
 	}
 
 	// 16 random bytes — enough that a malicious page can't guess the
@@ -153,7 +171,7 @@ func cmdLogin(args []string) int {
 			who = who + " (" + cb.OrgName + ")"
 		}
 		fmt.Printf("agentry: logged in as %s\n", who)
-		fmt.Println("        run `agentry cluster` to pick a server, or open https://app.agentry.run to add one")
+		fmt.Println("        run `agentry server` to pick a server, or open https://app.agentry.run to add one")
 		return 0
 
 	case err := <-errCh:

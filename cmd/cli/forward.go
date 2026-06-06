@@ -80,7 +80,7 @@ func cmdForward(args []string) int {
 		return die("config has no broker_url; run `agentry init`")
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster`")
+		return die("no server set; run `agentry server`")
 	}
 
 	ctx, cancel := signalContext()
@@ -112,7 +112,7 @@ func cmdForward(args []string) int {
 	defer listener.Close()
 	actualLocal := listener.Addr().(*net.TCPAddr).Port
 
-	fmt.Printf("agentry forward: tcp://localhost:%d → sandbox %s, port %d (cluster=%s)\n",
+	fmt.Printf("agentry forward: tcp://localhost:%d → sandbox %s, port %d (server=%s)\n",
 		actualLocal, sandbox, remotePort, cfg.Cluster)
 	fmt.Println("press Ctrl+C to stop")
 

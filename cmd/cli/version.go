@@ -1,0 +1,47 @@
+package main
+
+import (
+	"fmt"
+	"runtime/debug"
+)
+
+// cmdVersion prints what the user installed: semver if available,
+// otherwise the VCS commit + dirty state baked in by `go build`. The
+// stdlib debug.ReadBuildInfo populates this when the binary is built
+// from a tagged release; for local dev builds we fall back to the
+// VCS revision settings the toolchain stamps automatically.
+func cmdVersion(_ []string) int {
+	fmt.Println(versionString())
+	return 0
+}
+
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "agentry (version unknown)"
+	}
+	v := info.Main.Version
+	// `go build` from a non-released checkout reports "(devel)" — strip
+	// the parens noise and report the commit instead.
+	if v == "" || v == "(devel)" {
+		var rev, mod string
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				if s.Value == "true" {
+					mod = " (dirty)"
+				}
+			}
+		}
+		if rev != "" {
+			if len(rev) > 12 {
+				rev = rev[:12]
+			}
+			return "agentry " + rev + mod
+		}
+		return "agentry (devel)"
+	}
+	return "agentry " + v
+}

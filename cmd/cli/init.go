@@ -157,9 +157,9 @@ func cmdInit(args []string) int {
 	fmt.Printf("  cert:    %s (valid until %s)\n", cfg.DeviceCertPath, resp.ExpiresAt)
 	if cluster == "" {
 		fmt.Println()
-		fmt.Println("Next: run `agentry cluster` to pick a target cluster, then point your AI client at `agentry stdio`.")
+		fmt.Println("Next: run `agentry server` to pick a target server, then point your AI client at `agentry stdio`.")
 	} else {
-		fmt.Printf("  cluster: %s\n", cluster)
+		fmt.Printf("  server:  %s\n", cluster)
 	}
 	return 0
 }

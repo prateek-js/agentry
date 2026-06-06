@@ -45,24 +45,29 @@ func sandboxLs() int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster use <name>` first")
+		return die("no server set; run `agentry server use <name>` first")
 	}
 	list, err := fetchSandboxes(cfg)
 	if err != nil {
 		return die("fetch sandboxes: %v", err)
 	}
 	if len(list) == 0 {
-		fmt.Println("(no sandboxes on this cluster)")
+		fmt.Println("(no sandboxes on this server)")
 		return 0
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].SandboxID < list[j].SandboxID })
 	state := LoadState()
+	tw := tabWriter()
+	defer tw.Flush()
+	fmt.Fprintln(tw, "SANDBOX\tSTATUS\tURL")
 	for _, s := range list {
-		marker := ""
+		name := s.SandboxID
 		if s.SandboxID == state.CurrentSandbox {
-			marker = " *"
+			name = "* " + s.SandboxID
+		} else {
+			name = "  " + s.SandboxID
 		}
-		fmt.Printf("%-24s %s%s\n", s.SandboxID, s.Status, marker)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, s.Status, emptyAs(s.SandboxURL, "-"))
 	}
 	return 0
 }
@@ -93,7 +98,7 @@ func sandboxRm(id string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster use <name>` first")
+		return die("no server set; run `agentry server use <name>` first")
 	}
 	client, err := newAppClient(cfg)
 	if err != nil {

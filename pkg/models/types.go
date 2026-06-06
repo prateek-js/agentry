@@ -148,6 +148,16 @@ type PortInfo struct {
 	PID         int    `json:"pid,omitempty"`
 	ProcessName string `json:"process_name,omitempty"`
 	State       string `json:"state"`
+	// Address is the literal bind host from the LISTEN socket
+	// ("0.0.0.0", "127.0.0.1", "::", "::1", or a specific interface
+	// IP). Used by the dashboard to distinguish ports that can be
+	// reached from outside the sandbox from loopback-only sockets
+	// (Jupyter kernels, internal IPC, etc.).
+	Address string `json:"address,omitempty"`
+	// Loopback is true when Address is on the loopback range. Computed
+	// server-side so every consumer agrees on the classification
+	// without having to ParseIP themselves.
+	Loopback bool `json:"loopback,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +259,13 @@ type ArchiveCreateRequest struct {
 	Files  []string `json:"files"`
 	Output string   `json:"output"`
 	Format string   `json:"format"`
+
+	// Exclude is a list of GNU-tar --exclude patterns applied before
+	// any input file is walked. Used by `agentry pull` to skip
+	// reproducible-from-lockfile trees (node_modules, .next, dist,
+	// __pycache__, …) so a research workspace doesn't ship 8 GB of
+	// junk over the tunnel.
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 type ArchiveExtractRequest struct {

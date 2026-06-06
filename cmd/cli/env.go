@@ -203,7 +203,7 @@ func openTunnel(cfg *Config) (*yamux.Session, error) {
 		return nil, fmt.Errorf("config has no broker_url; run `agentry init`")
 	}
 	if cfg.Cluster == "" {
-		return nil, fmt.Errorf("no cluster set; run `agentry cluster use <name>`")
+		return nil, fmt.Errorf("no server set; run `agentry server use <name>`")
 	}
 	dial := tunnel.DialConfig{
 		BrokerURL: cfg.BrokerURL,

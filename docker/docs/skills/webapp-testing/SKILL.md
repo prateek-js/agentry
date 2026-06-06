@@ -36,18 +36,16 @@ User task → Is it static HTML?
 
 To start a server, run `--help` first, then use the helper:
 
-**Single server:**
+**Drive the one running project:**
 ```bash
-python scripts/with_server.py --server "npm run dev" --port 5173 -- python your_automation.py
+python scripts/with_server.py --server "npm run dev" --port 3000 -- python your_automation.py
 ```
 
-**Multiple servers (e.g., backend + frontend):**
-```bash
-python scripts/with_server.py \
-  --server "cd backend && python server.py" --port 3000 \
-  --server "cd frontend && npm run dev" --port 5173 \
-  -- python your_automation.py
-```
+Each sandbox runs exactly one project, so testing always targets a
+single server. If `project_list` already has the project up
+(`project_start` from an earlier turn), you can skip the `--server`
+flag entirely and point Playwright at `http://127.0.0.1:<port>/`
+directly.
 
 To create an automation script, include only Playwright logic (servers are managed automatically):
 ```python

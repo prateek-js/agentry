@@ -39,6 +39,17 @@ type Project struct {
 	lastError    string
 	logs         []string
 	health       string // "healthy" | "unhealthy" | "unknown"
+
+	// manuallyStopped is set by stopProject when an explicit Stop /
+	// QuiesceProject call kills the process. watchProcess inspects this
+	// when the process exits — if true, auto-restart is suppressed.
+	//
+	// Without this, an external "please stop the dev server during
+	// preflight" intent loses to the 1-16 s auto-restart loop, and the
+	// dev server reappears mid-build to fight the preflight over .next/.
+	// A fresh StartProject creates a new Project struct so the flag
+	// never leaks across lifecycles.
+	manuallyStopped bool
 }
 
 // ProjectManager manages the lifecycle of all projects.
@@ -273,7 +284,11 @@ func (pm *ProjectManager) watchProcess(proj *Project) {
 
 	proj.mu.Lock()
 	name := proj.config.Name
-	autoRestart := proj.config.AutoRestart
+	// Suppress auto-restart when the exit was triggered by an explicit
+	// stop — stop should mean stop. Crashes still get auto-restarted as
+	// before. Without this gate, callers (the deploy-preflight pause
+	// among them) can't reliably keep a project off.
+	autoRestart := proj.config.AutoRestart && !proj.manuallyStopped
 	proj.status = "stopped"
 	if proj.cmd.ProcessState != nil && !proj.cmd.ProcessState.Success() {
 		proj.status = "failed"
@@ -357,6 +372,11 @@ func (pm *ProjectManager) stopProject(proj *Project) {
 	if proj.cancel != nil {
 		proj.cancel()
 	}
+	// Mark as manually stopped BEFORE the kill so watchProcess sees the
+	// flag when the wait returns. Otherwise there's a race: process
+	// exits, watchProcess reads autoRestart=true, schedules restart —
+	// then we set the flag too late.
+	proj.manuallyStopped = true
 	pid := proj.pid
 	proj.mu.Unlock()
 

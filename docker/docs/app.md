@@ -40,7 +40,7 @@ DO NOT DO THAT. Rules:
    matching folder. The kernel is a scratch buffer, not your codebase.
 4. The app isn't "built" until `project_list` reports the project
    `running` with port `3000` discovered. Empty `project_list` means
-   you have to start over. A page rendered in a Claude.ai artifact
+   you have to start over. A page rendered as a chat-embedded artifact
    does NOT substitute for a managed project.
 
 ### Quoting `npm install` flags
@@ -51,6 +51,29 @@ directory. ALWAYS quote pinned versions OR write `package.json`
 first via `file_write` and `npm install` (no args, reads
 package.json). Same applies to any shell command with `<`, `>`, `|`,
 `&`, `;` in the argument.
+
+## ⚠️ BEFORE YOU SAY THE TASK IS DONE — call `sandbox_preflight`
+
+`next dev` runs your code through Turbopack with relaxed type
+checking; `next build` runs the full TypeScript compile. Code that
+loads and renders happily in dev can fail to build with errors like
+"Cannot find name 'ProductDoc'" (missing import), "Type '…' is not
+assignable" (drift between caller and callee), or "Property '…' does
+not exist on type" (shape mismatch). These never surface from
+`port_wait` or curling the dev server — they only surface when
+something runs a real build.
+
+`sandbox_preflight` runs that build for you. Call it as the LAST step
+before you tell the user the task is complete:
+
+- `ok=true`  → safe to report done.
+- `ok=false` → read `output` (verbatim compiler error), fix the
+  reported files via `file_write` or `file_replace`, then call
+  `sandbox_preflight` again. Repeat until ok=true.
+
+A missing import or stale type is a 60-second fix while you're still
+in the conversation. The same error caught only when the user later
+tries to ship the project costs them a round trip back to chat.
 
 ## Layout — one managed Next.js project
 

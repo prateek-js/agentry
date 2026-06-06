@@ -109,10 +109,13 @@ func TestServerListsExpectedTools(t *testing.T) {
 		got[tool.Name] = struct{}{}
 	}
 	for _, want := range []string{
-		// Lifecycle
+		// Lifecycle (sandbox_preflight removed — preflight is now an
+		// internal step of the dashboard's Deploy flow, not an LLM
+		// tool, since the pause/cleanup choreography around it only
+		// makes sense inside the full deploy).
 		"sandbox_create", "sandbox_list", "sandbox_delete",
-		// Catalog + bindings + secrets (Phase 14–17 — build/deploy MCP
-		// tools were removed; deploy now lives in the dashboard).
+		// Catalog + bindings + secrets (build/deploy MCP tools were
+		// removed; deploy lives in the dashboard).
 		"service_list", "service_bind", "secret_set", "secret_list",
 		// Shell
 		"command_run", "command_start", "command_logs", "command_interrupt",

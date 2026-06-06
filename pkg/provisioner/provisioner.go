@@ -2,6 +2,7 @@ package provisioner
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,10 @@ import (
 	"github.com/agentry/agentry/pkg/models"
 	"github.com/agentry/agentry/pkg/telemetry"
 )
+
+// cryptoRandRead is a seam so tests can stub crypto/rand if they
+// want deterministic suffixes. Defaults to the real source.
+var cryptoRandRead = rand.Read
 
 // APIKeyEnv is the environment variable used to enable API-key auth on the
 // provisioner. When unset, the provisioner accepts unauthenticated requests.
@@ -61,6 +66,21 @@ type CreateRequest struct {
 	// Egress, when non-zero, installs an outbound packet filter at the
 	// sandbox's netns boundary. See egress.go.
 	Egress EgressPolicy `json:"egress,omitempty"`
+
+	// ReuseExisting opts into "join the existing sandbox with this id
+	// if one is already running" semantics. Default false: a collision
+	// allocates a fresh sandbox under <sandbox_id>-<4hex> so two
+	// independent callers (different chats, different users) can't
+	// silently overwrite each other's workspace. The response always
+	// carries the actual allocated sandbox_id; the caller should use
+	// THAT for any follow-up calls.
+	//
+	// Set true when the caller genuinely wants to resume a known
+	// sandbox by name (e.g. a CLI `agentry attach <name>`). The MCP
+	// tool leaves this false because LLMs across separate Roo
+	// conversations regularly pick the same project-derived name from
+	// the same prompt.
+	ReuseExisting bool `json:"reuse_existing,omitempty"`
 }
 
 // RenewRequest is the request body for POST /api/sandboxes/{id}/renew.
@@ -342,6 +362,7 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// the manifest sent to XDP.
 	mux.HandleFunc("POST /api/sandboxes/{id}/build", p.handleBuild)
 	mux.HandleFunc("POST /api/sandboxes/{id}/deploy-build", p.handleDeployBuild)
+	mux.HandleFunc("POST /api/sandboxes/{id}/deploy-push", p.handleDeployPush)
 
 	// Deploy runtime (cluster target). A built image becomes a long-
 	// lived container managed by these endpoints, addressable through
@@ -412,21 +433,48 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	podName := "sandbox-" + req.SandboxID
-	svcName := podName + "-svc"
 	createStart := time.Now()
-	log.Printf("provisioner: create sandbox=%s thread=%s image=%s", req.SandboxID, req.ThreadID, p.config.SandboxImage)
+	log.Printf("provisioner: create sandbox=%s thread=%s image=%s reuse=%v",
+		req.SandboxID, req.ThreadID, p.config.SandboxImage, req.ReuseExisting)
 
-	// Check if already exists.
+	// Two-arm collision policy. Same name from two independent callers
+	// (different chats, different machines) used to silently reuse the
+	// existing pod — and overwrite its workspace with the new caller's
+	// files. That's the e-commerce-store class of incident: LLM picks
+	// "ecommerce-store" both times, second chat clobbers the first.
+	//
+	//   ReuseExisting=true  → resume the existing sandbox (legacy
+	//                         "stable identity" semantics; needed by
+	//                         CLI `agentry attach <name>`).
+	//   ReuseExisting=false → on collision, allocate <id>-<4hex>; the
+	//                         response carries the allocated id so the
+	//                         caller's subsequent tool calls use it.
+	finalID := req.SandboxID
+	podName := "sandbox-" + finalID
+	svcName := podName + "-svc"
+
 	if port, err := p.backend.GetNodePort(ctx, p.config.Namespace, svcName); err == nil && port > 0 {
-		phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
-		log.Printf("provisioner: sandbox=%s already exists (phase=%s port=%d) — returning current", req.SandboxID, phase, port)
-		writeJSON(w, 200, SandboxInfo{
-			SandboxID:  req.SandboxID,
-			SandboxURL: p.sandboxURL(req.SandboxID, port),
-			Status:     phase,
-		})
-		return
+		if req.ReuseExisting {
+			phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
+			log.Printf("provisioner: sandbox=%s already exists (phase=%s port=%d) — reusing per request", finalID, phase, port)
+			writeJSON(w, 200, SandboxInfo{
+				SandboxID:  finalID,
+				SandboxURL: p.sandboxURL(finalID, port),
+				Status:     phase,
+			})
+			return
+		}
+		// Collision without reuse opt-in. Pick a fresh suffixed id.
+		fresh, err := p.allocFreshSandboxID(ctx, req.SandboxID)
+		if err != nil {
+			log.Printf("provisioner: sandbox=%s collision but suffix allocation failed: %v", req.SandboxID, err)
+			writeError(w, 500, "sandbox name collision could not be resolved: "+err.Error())
+			return
+		}
+		log.Printf("provisioner: sandbox=%s already exists; allocated fresh id %s", req.SandboxID, fresh)
+		finalID = fresh
+		podName = "sandbox-" + finalID
+		svcName = podName + "-svc"
 	}
 
 	annotations := ttlAnnotations(time.Now(), req.TTLSeconds)
@@ -436,7 +484,7 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := SandboxSpec{
-		SandboxID:    req.SandboxID,
+		SandboxID:    finalID,
 		ThreadID:     req.ThreadID,
 		Image:        p.config.SandboxImage,
 		Labels:       p.config.Labels,
@@ -484,7 +532,7 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// publicURL is what we publish to clients (broker-proxied path
 	// when tunneled, same as directURL when not).
 	directURL := fmt.Sprintf("http://%s:%d", p.config.NodeHost, nodePort)
-	publicURL := p.sandboxURL(req.SandboxID, nodePort)
+	publicURL := p.sandboxURL(finalID, nodePort)
 
 	// Wait until the runtime's TCP port is accept-ready inside the
 	// container. There's a real race here: Docker maps the host port
@@ -522,29 +570,120 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// 5 tries × 200 ms = 1 s budget, plenty for a healthy runtime;
 	// non-fatal if it ultimately misses — apps fall back to `?? "dev"`.
 	stampPath := "/var/run/agentry/agentry/AGENTRY_APP_NAME"
-	stampVal := []byte(req.SandboxID)
+	stampVal := []byte(finalID)
 	var stampErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
 			time.Sleep(200 * time.Millisecond)
 		}
-		if stampErr = p.runtimeFileWrite(ctx, req.SandboxID, stampPath, stampVal); stampErr == nil {
+		if stampErr = p.runtimeFileWrite(ctx, finalID, stampPath, stampVal); stampErr == nil {
 			break
 		}
 	}
 	if stampErr != nil {
-		log.Printf("provisioner: stamp AGENTRY_APP_NAME for sandbox=%s: %v", req.SandboxID, stampErr)
+		log.Printf("provisioner: stamp AGENTRY_APP_NAME for sandbox=%s: %v", finalID, stampErr)
 	}
 
 	phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
 	log.Printf("provisioner: sandbox=%s READY phase=%s port=%d url=%s elapsed=%s",
-		req.SandboxID, phase, nodePort, publicURL, time.Since(createStart).Round(time.Millisecond))
+		finalID, phase, nodePort, publicURL, time.Since(createStart).Round(time.Millisecond))
 	writeJSON(w, 200, SandboxInfo{
-		SandboxID:  req.SandboxID,
+		SandboxID:  finalID,
 		SandboxURL: publicURL,
 		Status:     phase,
 		ExpiresAt:  expiresAt,
 	})
+}
+
+// allocFreshSandboxID resolves a name collision by appending a short
+// random hex suffix to base and returning the first variant that
+// doesn't already exist. Tries a handful of times in case randomness
+// is unlucky (the per-attempt collision probability is ~1/65536, so
+// 8 attempts is effectively unbounded).
+//
+// Uses GetNodePort for the existence check — same predicate the
+// caller used, so we agree on "exists" semantics across the
+// happy-path probe and the suffix loop.
+//
+// The base is sanitised so a future caller pushing a name with
+// unsavoury characters (uppercase, dots) doesn't end up with a pod
+// name docker / kubernetes won't accept. The sandbox container name
+// shape (`sandbox-<id>`) already enforces lowercase/alphanumeric/dash
+// at the backend layer; mirror that here so the loop's existence
+// probe is comparing apples-to-apples with what CreatePod will
+// eventually use.
+func (p *Provisioner) allocFreshSandboxID(ctx context.Context, base string) (string, error) {
+	clean := sanitizeSandboxID(base)
+	if clean == "" {
+		clean = "sandbox"
+	}
+	const attempts = 8
+	for i := 0; i < attempts; i++ {
+		candidate := clean + "-" + randomHexSuffix(4)
+		svc := "sandbox-" + candidate + "-svc"
+		if port, err := p.backend.GetNodePort(ctx, p.config.Namespace, svc); err != nil || port == 0 {
+			// Either the service doesn't exist (err != nil — mock
+			// surfaces "not found"; real k8s/docker surface their own
+			// shape) or it exists with no port allocated yet. Either
+			// way, the candidate id is free to use.
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a free name after %d attempts", attempts)
+}
+
+// sanitizeSandboxID lowercases + filters base to characters that
+// docker container names and kubernetes pod names both accept. Keeps
+// alphanumeric, dash. Collapses runs of dashes, trims leading /
+// trailing dashes. Truncates to a length that leaves room for the
+// "-<4hex>" suffix and the "sandbox-" prefix without blowing past
+// docker's 63-char limit.
+func sanitizeSandboxID(s string) string {
+	const max = 40 // 63 (docker) - len("sandbox-") - len("-XXXX") - safety
+	var b []byte
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b = append(b, byte(r))
+			prevDash = false
+		case r >= 'A' && r <= 'Z':
+			b = append(b, byte(r+32))
+			prevDash = false
+		case r == '-' || r == '_' || r == '.':
+			if !prevDash && len(b) > 0 {
+				b = append(b, '-')
+				prevDash = true
+			}
+		}
+		if len(b) >= max {
+			break
+		}
+	}
+	// Trim trailing dash.
+	for len(b) > 0 && b[len(b)-1] == '-' {
+		b = b[:len(b)-1]
+	}
+	return string(b)
+}
+
+// randomHexSuffix returns n hex characters from crypto/rand. Kept
+// inline (no helper import) so the provisioner doesn't pick up a new
+// dependency just for 4 bytes of entropy.
+func randomHexSuffix(n int) string {
+	const hex = "0123456789abcdef"
+	buf := make([]byte, n)
+	if _, err := cryptoRandRead(buf); err != nil {
+		// crypto/rand should never fail on a real host. If it does
+		// the fall-through (zeros) is fine: the loop will just pick
+		// the next attempt and try again.
+		return string(make([]byte, n))
+	}
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = hex[int(buf[i])%16]
+	}
+	return string(out)
 }
 
 // waitPortReachable polls a TCP dial to the URL's host:port until a

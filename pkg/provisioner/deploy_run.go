@@ -1,9 +1,12 @@
 package provisioner
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -12,7 +15,9 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/registry"
 )
 
 // Deploy run + proxy endpoints — the cluster target's runtime side.
@@ -29,9 +34,27 @@ import (
 // DeploymentRunRequest is the body for POST /api/deployments.
 type DeploymentRunRequest struct {
 	ID       string            `json:"id"`        // dep_xxx — what agentry-app issued
-	ImageRef string            `json:"image_ref"` // from deploy-build
+	ImageRef string            `json:"image_ref"` // from deploy-build OR a registry ref
 	Port     int               `json:"port"`      // port the app listens on inside the image
 	Env      map[string]string `json:"env,omitempty"`
+
+	// RegistryAuth is set when ImageRef points at a remote registry the
+	// daemon needs to docker-pull before running. Absent means the image
+	// is already present locally — the build-then-run path on the
+	// SAME cluster as the build doesn't need to pull. Set for rollback
+	// (re-running an older image from the org's registry) and for
+	// cross-server deploys (the image was built elsewhere). The token
+	// lives in r.Body for the duration of this call and is never
+	// persisted or logged.
+	RegistryAuth *DeploymentRegistryAuth `json:"registry_auth,omitempty"`
+}
+
+// DeploymentRegistryAuth mirrors the docker daemon's auth shape so we
+// can hand it straight to ImagePull. Same fields used by deploy-push.
+type DeploymentRegistryAuth struct {
+	Host     string `json:"host"`
+	Username string `json:"username"`
+	Token    string `json:"token"`
 }
 
 // DeploymentRunResponse echoes the running container.
@@ -77,6 +100,24 @@ func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request
 	containerName := deploymentContainerPrefix + req.ID
 
 	ctx := r.Context()
+
+	// Pull from the registry if the caller handed us creds. The control
+	// plane sets RegistryAuth for two cases — rollback (re-running an
+	// older image from the org's registry) and cross-server (the image
+	// was built on a different cluster). For the same-cluster build-
+	// then-run path RegistryAuth is nil and we skip straight to
+	// ContainerCreate, since the image is already in the daemon.
+	//
+	// Failure to pull is a hard error: if the daemon doesn't have the
+	// image and we couldn't fetch it, ContainerCreate will fail with a
+	// less clear error a few lines down. Fail loudly here.
+	if req.RegistryAuth != nil {
+		if err := pullForDeploy(ctx, dockerCli, req.ImageRef, req.RegistryAuth); err != nil {
+			log.Printf("deploy-run: id=%s pull failed: %v", req.ID, err)
+			writeError(w, http.StatusBadGateway, "pull image: "+err.Error())
+			return
+		}
+	}
 
 	// Stop + remove any existing container with this name. Mirrors the
 	// "redeploy is just rerun with a new image" UX — atomically swap
@@ -241,6 +282,61 @@ func (p *Provisioner) handleDeploymentProxy(w http.ResponseWriter, r *http.Reque
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// pullForDeploy authenticates against the registry and pulls ImageRef
+// into the local daemon. We drain the streaming event log and surface
+// the first error frame the daemon emits — an HTTP 200 from ImagePull
+// is NOT a success signal on its own (the failure for e.g. a bad token
+// is delivered as a JSON event mid-stream). Same shape as drainPushStream.
+func pullForDeploy(ctx context.Context, dockerCli imagePuller, ref string, auth *DeploymentRegistryAuth) error {
+	authJSON, _ := json.Marshal(registry.AuthConfig{
+		Username:      auth.Username,
+		Password:      auth.Token,
+		ServerAddress: auth.Host,
+	})
+	stream, err := dockerCli.ImagePull(ctx, ref, image.PullOptions{
+		RegistryAuth: base64.URLEncoding.EncodeToString(authJSON),
+	})
+	if err != nil {
+		return fmt.Errorf("start pull: %w", err)
+	}
+	defer stream.Close()
+	return drainPullStream(stream)
+}
+
+// imagePuller is the slice of the docker client surface pullForDeploy
+// needs. Keeping it small lets the unit test below stand a fake without
+// reaching for a full docker daemon.
+type imagePuller interface {
+	ImagePull(ctx context.Context, ref string, opts image.PullOptions) (io.ReadCloser, error)
+}
+
+// drainPullStream parses the daemon's JSON-line stream and returns the
+// first error frame. Identical contract to drainPushStream — we want
+// the stream fully consumed (otherwise the underlying conn leaks) AND
+// the first error surfaced (otherwise auth failures look like success).
+func drainPullStream(r io.Reader) error {
+	dec := json.NewDecoder(r)
+	for dec.More() {
+		var ev struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+			ErrorD struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := dec.Decode(&ev); err != nil {
+			return fmt.Errorf("decode pull event: %w", err)
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("%s", ev.Error)
+		}
+		if ev.ErrorD.Message != "" {
+			return fmt.Errorf("%s", ev.ErrorD.Message)
+		}
+	}
+	return nil
 }
 
 // writeJSON is a thin helper. Lives here so the deploy_* files can use

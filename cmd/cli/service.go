@@ -17,24 +17,24 @@ import (
 )
 
 // serviceHelp is the `agentry service --help` block.
-const serviceHelp = `agentry service - manage cluster service bindings (databases, AI APIs, …)
+const serviceHelp = `agentry service - manage server service bindings (databases, AI APIs, …)
 
-Services live in the cluster catalog: postgres, mysql, mongodb, redis,
+Services live in the server catalog: postgres, mysql, mongodb, redis,
 clickhouse, aws-s3, smtp, stripe, openai, anthropic, http-api. Binding
-a service stages its credentials so every sandbox in this cluster gets
+a service stages its credentials so every sandbox on this server gets
 the matching env vars on shell start.
 
 Usage:
   agentry service ls                        list available services in the catalog
-  agentry service bind <service>            bind for THIS cluster (default)
+  agentry service bind <service>            bind for THIS server (default)
   agentry service bind --sandbox <id> <s>   bind only to one sandbox (one-shot)
   agentry service bind <s> --from-env       read values from current shell env
-  agentry service binds                     list cluster-default bindings stored locally
-  agentry service unbind <service>          drop a cluster default
+  agentry service binds                     list server-default bindings stored locally
+  agentry service unbind <service>          drop a server default
 
 Examples:
-  # First time: pick a cluster, then bind postgres
-  agentry cluster use hetzner-test
+  # First time: pick a server, then bind postgres
+  agentry server use hetzner-test
   agentry service bind postgres
 
   # One-shot bind on a specific sandbox (won't apply to future creates)

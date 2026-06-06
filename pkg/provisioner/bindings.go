@@ -225,7 +225,7 @@ func (p *Provisioner) handleBindingResolve(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	env := map[string]string{}
-	sources := map[string]string{} // key → service
+	sources := map[string]string{} // key → "<service>" or "secret"
 	if lock != nil {
 		for _, b := range lock.Bindings {
 			for _, k := range b.EnvVars {
@@ -237,6 +237,32 @@ func (p *Provisioner) handleBindingResolve(w http.ResponseWriter, r *http.Reques
 				env[k] = string(raw)
 				sources[k] = b.Service
 			}
+		}
+
+		// Sandbox-staged secrets live alongside bindings under
+		// /var/run/agentry/secrets/<NAME>, but they're tracked in
+		// lock.Secrets, not lock.Bindings. Without this loop, secrets
+		// the user set via `agentry env set` / the dashboard's Secrets
+		// panel would show up in the sandbox runtime but vanish at
+		// deploy time — the dashboard would silently fail to ship a
+		// SESSION_KEY the user pasted into the sandbox a minute ago.
+		// Source tag is "secret" so the dashboard can render it
+		// distinctly from a service binding.
+		for _, name := range lock.Secrets {
+			if _, already := env[name]; already {
+				// A service binding with the same key wins (service
+				// bindings are managed; user secrets are user-managed).
+				// The control plane's "Custom > inherited" precedence
+				// still applies on top.
+				continue
+			}
+			path := fmt.Sprintf("/var/run/agentry/secrets/%s", name)
+			raw, ferr := p.runtimeFileRead(r.Context(), id, path)
+			if ferr != nil || len(raw) == 0 {
+				continue
+			}
+			env[name] = string(raw)
+			sources[name] = "secret"
 		}
 	}
 	writeJSON(w, 200, map[string]any{

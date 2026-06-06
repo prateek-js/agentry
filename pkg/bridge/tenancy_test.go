@@ -190,6 +190,51 @@ func TestProxyToCluster_BlocksCrossOrg(t *testing.T) {
 	}
 }
 
+// TestPerSandboxControlPlaneRoutes_Registered pins the per-sandbox
+// control-plane routes (single GET, POST /renew, GET/POST /secrets)
+// into the bridge mux. The handlers themselves are one-line delegations
+// to proxyToCluster, which is already covered by
+// TestProxyToCluster_BlocksCrossOrg; this test catches the failure mode
+// where a route gets accidentally deleted from Handler()'s mux and
+// silently 404s.
+//
+// We assert "502 because the cluster isn't joined" rather than
+// "404 because the route is gone" — proxyToCluster returns the former
+// when the named cluster isn't currently connected.
+func TestPerSandboxControlPlaneRoutes_Registered(t *testing.T) {
+	b := NewWithConfig(Config{DevMode: true})
+	srv := httptest.NewServer(b.Handler())
+	t.Cleanup(srv.Close)
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"single sandbox GET", "GET", "/api/clusters/anywhere/sandboxes/sb1"},
+		{"renew POST", "POST", "/api/clusters/anywhere/sandboxes/sb1/renew"},
+		{"secrets list GET", "GET", "/api/clusters/anywhere/sandboxes/sb1/secrets"},
+		{"secret set POST", "POST", "/api/clusters/anywhere/sandboxes/sb1/secrets"},
+		{"deploy-push POST", "POST", "/api/clusters/anywhere/sandboxes/sb1/deploy-push"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(tc.method, srv.URL+tc.path, http.NoBody)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+			// 502 = route exists, proxyToCluster ran, no such cluster.
+			// 404 = route never registered (regression).
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Errorf("%s status = %d; want 502 (route registered but cluster offline)",
+					tc.method, resp.StatusCode)
+			}
+		})
+	}
+}
+
 // keep the yamux import — bridge_test.go uses it too but goimports
 // won't trim it from this file unless we touch it.
 var _ = yamux.DefaultConfig
