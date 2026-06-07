@@ -34,7 +34,7 @@ type DeployRoute struct {
 	Kind      string `json:"kind"`               // "share" | "deployment" (default: "share" for legacy rows)
 	ClusterID string `json:"cluster_id"`         // matches the cluster-id used at handshake (== cluster name)
 	OrgID     string `json:"org_id"`             // Clerk org gate
-	AuthMode  string `json:"auth_mode"`          // "org" | "public"
+	AuthMode  string `json:"auth_mode"`          // "public" | "org" | "password"
 
 	// Kind=share fields.
 	SandboxID string `json:"sandbox_id,omitempty"`
@@ -42,6 +42,16 @@ type DeployRoute struct {
 
 	// Kind=deployment fields.
 	DeploymentID string `json:"deployment_id,omitempty"`
+
+	// AuthMode=password fields. Empty/zero for the other auth modes.
+	// PasswordHashB64 is the base64-encoded argon2id (salt + key) from
+	// agentry-app — verified at the bridge so we don't round-trip per
+	// request. PasswordPrefix is the first 8 bytes of the same hash
+	// embedded in the unlock cookie so a regenerate (which produces a
+	// different hash and a different prefix) strictly invalidates
+	// every cookie minted under the old passphrase.
+	PasswordHashB64 string `json:"password_hash_b64,omitempty"`
+	PasswordPrefix  uint64 `json:"password_prefix,omitempty"`
 }
 
 // DeployRegistry is the in-memory hostname → route map. Mutated by

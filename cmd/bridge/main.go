@@ -170,8 +170,18 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 				deploymentPlaceholder(w, r, env.deployDomain)
 				return
 			}
-			if !checkDeployAuth(w, r, route, env.deployAuthSecret, env.appURL) {
-				return // checkDeployAuth wrote the response (redirect or 4xx)
+			// Dispatch by auth mode. Password mode short-circuits to its
+			// own form/cookie flow; org mode goes through the Clerk
+			// handoff; public falls through to the upstream proxy.
+			switch route.AuthMode {
+			case "password":
+				if !checkDeployAuthPassword(w, r, route, env.deployAuthSecret) {
+					return
+				}
+			default:
+				if !checkDeployAuth(w, r, route, env.deployAuthSecret, env.appURL) {
+					return // checkDeployAuth wrote the response (redirect or 4xx)
+				}
 			}
 			b.HandleDeployment(w, r)
 			return
