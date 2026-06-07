@@ -27,6 +27,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/hashicorp/yamux"
+
 	"github.com/agentry/agentry/pkg/bridge"
 	"github.com/agentry/agentry/pkg/mcp"
 	"github.com/agentry/agentry/pkg/tunnel"
@@ -198,8 +200,6 @@ func cmdMCP(_ []string) int {
 
 	ctx, cancel := signalContext()
 
-	log.Printf("agentry: dialing broker %s as device=%s, cluster=%s",
-		cfg.BrokerURL, cfg.DeviceID, cfg.Cluster)
 	dial := tunnel.DialConfig{
 		BrokerURL: cfg.BrokerURL,
 		Role:      tunnel.RoleDevice,
@@ -212,14 +212,15 @@ func cmdMCP(_ []string) int {
 		}
 		dial.TLSConfig = tlsConf
 	}
-	sess, err := tunnel.Dial(ctx, dial)
-	if err != nil {
-		return die("dial broker: %v", err)
-	}
 
-	// http.Client whose transport is the tunnel RoundTripper plus a
-	// per-request stamp of X-Cluster. The MCP client doesn't know
-	// the bytes are tunneled — it just sees a working http.Client.
+	// Start with a session-less RoundTripper. The broker dial happens
+	// in the background goroutine below — synchronous dial here would
+	// block the MCP server from responding to the host's `initialize`
+	// request, and Roo/Cursor/Claude Desktop time it out at -32001
+	// after ~5 s on slow/captive networks. Tool calls that arrive
+	// before the session is ready get a clean "no live session" error
+	// (the RoundTripper's nil-session path); subsequent calls work
+	// once the dial lands.
 	//
 	// clusterRef is a TTL-cached reader for the active cluster so
 	// `agentry cluster use <name>` takes effect on the very next tool
@@ -228,27 +229,21 @@ func cmdMCP(_ []string) int {
 	// sandbox's cluster-default service binds also come from the
 	// current cluster, not the boot-time snapshot.
 	clusterRef := newConfigCluster(cfg.Cluster)
-	inner := tunnel.NewRoundTripper(sess)
+	inner := tunnel.NewRoundTripper(nil)
 	rt := &clusterStampedRT{
 		next:       inner,
 		getCluster: clusterRef.Get,
 	}
 
-	// Reconnect loop. yamux sessions die from idle timeouts, network
-	// blips, autocert renewals on the bridge, anything that closes the
-	// underlying TCP. Without this loop the MCP server stays alive but
-	// every tool call returns "tunnel: session closed: no live session"
-	// and the LLM caller (Roo / Claude Desktop) concludes the tunnel
-	// is "down" and bails — even though the MCP subprocess itself is
-	// trivially recoverable by redialing.
-	//
-	// On session close: log, exponential backoff, redial, SetSession.
-	// In-flight requests keep using the dying session (RoundTripper's
-	// atomic pointer is read-once per request); new requests after the
-	// swap pick up the fresh one.
-	go reconnectLoop(ctx, sess, inner, dial)
+	// Dial the broker in the background + keep it connected through
+	// session drops. First successful dial populates the RoundTripper;
+	// subsequent re-dials replace it. yamux sessions die from idle
+	// timeouts, network blips, autocert renewals on the bridge,
+	// anything that closes the underlying TCP — the loop keeps the
+	// MCP server alive across all of those.
+	go connectAndKeepAlive(ctx, inner, dial, cfg.BrokerURL, cfg.DeviceID, cfg.Cluster)
 	defer func() {
-		// Order matters: cancel ctx first so the reconnect goroutine
+		// Order matters: cancel ctx first so the connect goroutine
 		// returns through its `<-ctx.Done()` branch and doesn't log
 		// "session closed; reconnecting" on graceful shutdown. THEN
 		// close whatever session is currently held.
@@ -429,40 +424,56 @@ func (c *configCluster) Get() string {
 // sees a healthy session instead of "no live session".
 //
 // Returns when ctx is cancelled (Ctrl+C or signalContext fire).
-func reconnectLoop(ctx context.Context, initial tunnelSession, rt *tunnel.RoundTripper, dial tunnel.DialConfig) {
-	current := initial
+//
+// Unified path for the initial dial + every subsequent reconnect.
+// Logs to stderr (visible in the host's MCP debug pane) so the user
+// can tell whether the tunnel is up; the MCP server itself stays
+// responsive on stdin/stdout regardless of broker reachability.
+func connectAndKeepAlive(ctx context.Context, rt *tunnel.RoundTripper, dial tunnel.DialConfig, brokerURL, deviceID, cluster string) {
+	log.Printf("agentry: dialing broker %s as device=%s, cluster=%s",
+		brokerURL, deviceID, cluster)
 	for {
-		// Wait for the current session to die or ctx to cancel.
-		select {
-		case <-ctx.Done():
-			return
-		case <-current.CloseChan():
-		}
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("agentry: tunnel session closed; reconnecting")
+		sess := dialWithBackoff(ctx, dial)
+		if sess == nil {
+			return // ctx cancelled mid-backoff
+		}
+		rt.SetSession(sess)
+		log.Printf("agentry: tunnel connected")
 
-		backoff := tunnel.NewBackoff(tunnel.DialerBackoff())
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			sess, err := tunnel.Dial(ctx, dial)
-			if err == nil {
-				log.Printf("agentry: tunnel reconnected")
-				rt.SetSession(sess)
-				current = sess
-				break
-			}
-			delay := backoff.Next()
-			log.Printf("agentry: reconnect attempt %d failed: %v (retry in %s)",
-				backoff.Attempts(), err, delay)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(delay):
-			}
+		select {
+		case <-ctx.Done():
+			return
+		case <-sess.CloseChan():
+			log.Printf("agentry: tunnel session closed; reconnecting")
+		}
+	}
+}
+
+// dialWithBackoff loops on tunnel.Dial with exponential backoff until
+// either the dial succeeds or ctx is cancelled. Returns nil only on
+// cancellation; every other failure mode (DNS, TLS, broker-rejected
+// CSR) keeps retrying because the user usually wants the MCP server
+// to recover automatically once the network or broker comes back.
+func dialWithBackoff(ctx context.Context, dial tunnel.DialConfig) *yamux.Session {
+	backoff := tunnel.NewBackoff(tunnel.DialerBackoff())
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		sess, err := tunnel.Dial(ctx, dial)
+		if err == nil {
+			return sess
+		}
+		delay := backoff.Next()
+		log.Printf("agentry: tunnel dial attempt %d failed: %v (retry in %s)",
+			backoff.Attempts(), err, delay)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
 		}
 	}
 }
