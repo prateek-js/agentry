@@ -28,8 +28,19 @@ import (
 const dockerAnnotationPrefix = "ad-sandbox.io/"
 
 // containerHTTPPort is the port the runtime listens on inside the
-// container. We publish it to a random host port.
+// container. We publish it to a random LOOPBACK-only host port —
+// the provisioner co-locates with the Docker daemon and reaches the
+// runtime via localhost (see runtime_proxy.go + Config.NodeHost).
+// Binding to 0.0.0.0 would expose the runtime API (shell-exec,
+// file-write, code-exec) to anyone who can reach the host, bypassing
+// the bridge's mTLS gate + every org-scope check.
 const containerHTTPPort = "8080/tcp"
+
+// loopbackHostIP scopes published host ports to 127.0.0.1 so the
+// runtime API is reachable only from co-located processes (provisioner)
+// — never from the public network. External traffic always goes
+// through the bridge tunnel.
+const loopbackHostIP = "127.0.0.1"
 
 // DockerBackend implements Backend by talking to the local Docker
 // daemon via the official Go SDK. Suitable for single-host deploys and
@@ -160,7 +171,7 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 
 	hostCfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
-			containerHTTPPort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
+			containerHTTPPort: []nat.PortBinding{{HostIP: loopbackHostIP, HostPort: ""}},
 		},
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
 	}
