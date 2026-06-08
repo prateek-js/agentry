@@ -261,19 +261,67 @@ func cmdMCP(_ []string) int {
 		ProvisionerURL: "http://bridge.invalid",
 		HTTPClient:     tunneledHTTP,
 		// After every successful sandbox_create, replay each
-		// cluster-default service bind the user staged via
-		// `agentry service bind <service>`. Real creds live in
-		// ~/.agentry/services/<cluster>/; they ride the same tunnel
-		// that just created the sandbox. clusterRef.Get is the same
-		// TTL-cached reader the round-tripper uses, so a fresh
-		// sandbox always gets the binds matching the cluster the
-		// request was routed to.
-		PostCreateHook: applyClusterDefaults(clusterRef.Get, tunneledHTTP),
+		// cluster-default service bind + env var the user staged via
+		// `agentry service bind <service>` / `agentry env set NAME`
+		// (no --sandbox). Real creds + secrets live in
+		// ~/.ad-sandbox/{services,envs}/<cluster>/; they ride the
+		// same tunnel that just created the sandbox. clusterRef.Get is
+		// the same TTL-cached reader the round-tripper uses, so a
+		// fresh sandbox always gets the binds + envs matching the
+		// cluster the request was routed to.
+		PostCreateHook: chainHooks(
+			applyClusterDefaults(clusterRef.Get, tunneledHTTP),
+			applyClusterEnvDefaults(clusterRef.Get, tunneledHTTP),
+		),
 	})
 
-	if err := mcp.RunStdio(ctx, mcpClient); err != nil &&
-		!errors.Is(err, context.Canceled) {
-		return die("mcp server: %v", err)
+	// Watchdogs around the stdio loop. Two failure modes we've seen
+	// in practice — both can leave the process running after Roo /
+	// Cursor / Claude Desktop is gone, where it shows up as a
+	// duplicate "agentry mcp" the next time the host spawns a fresh
+	// one and the new initialize times out at -32001:
+	//
+	//   1. Parent death without SIGHUP. macOS doesn't deliver SIGHUP
+	//      to children when a VS Code window crashes; the process gets
+	//      reparented to launchd (PID 1). Poll PPID and exit when we
+	//      notice we've been re-parented.
+	//   2. stdin EOF not propagating through the SDK's reader fast
+	//      enough. RunStdio occasionally lingers in an interruptible
+	//      sleep waiting on a channel. Once ctx is cancelled, give it
+	//      2 s to clean up, then force-exit.
+	go func() {
+		t := time.NewTicker(1 * time.Second)
+		defer t.Stop()
+		startPPID := os.Getppid()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if ppid := os.Getppid(); ppid == 1 || (startPPID != 1 && ppid != startPPID) {
+					// Parent went away (re-parented to init, or PID
+					// changed). Tear ourselves down.
+					cancel()
+					time.AfterFunc(2*time.Second, func() { os.Exit(0) })
+					return
+				}
+			}
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		// Hard fence: 2 s after any cancellation path, exit regardless
+		// of where RunStdio + the dial goroutine are.
+		time.AfterFunc(2*time.Second, func() { os.Exit(0) })
+	}()
+
+	mcpErr := mcp.RunStdio(ctx, mcpClient)
+	cancel()
+	if s := inner.Session(); s != nil {
+		_ = s.Close()
+	}
+	if mcpErr != nil && !errors.Is(mcpErr, context.Canceled) {
+		return die("mcp server: %v", mcpErr)
 	}
 	return 0
 }
@@ -315,13 +363,20 @@ func emptyAs(s, fallback string) string {
 	return s
 }
 
-// signalContext returns a context that cancels on SIGTERM/SIGINT.
-// The MCP RunStdio loop respects ctx so a Ctrl+C from Claude Desktop's
-// subprocess management unblocks cleanly.
+// signalContext returns a context that cancels on SIGTERM/SIGINT/SIGHUP.
+// The MCP RunStdio loop respects ctx so the host's subprocess
+// management (Claude Desktop, Roo Code, Cursor, …) can unblock cleanly
+// when it tears the connection down.
+//
+// SIGHUP is the load-bearing addition: when a VS Code window closes,
+// macOS / Linux send SIGHUP to child processes. Without it, the agentry
+// stdio process keeps running after the host disappears and shows up
+// in the next `ps` as an orphan — the exact "two agentry mcp instances"
+// shape that Roo Code users hit when Code is restarted mid-session.
 func signalContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	go func() {
 		<-stop
 		cancel()

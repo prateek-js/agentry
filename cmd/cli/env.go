@@ -18,10 +18,17 @@ import (
 	"golang.org/x/term"
 )
 
-// cmdEnv dispatches the `agentry env *` subcommands. Set stages
-// values into the sandbox via the provisioner; ls reads back the
-// names. --sandbox defaults to whatever `agentry sandbox use` pinned
-// so the common case is a one-token command.
+// cmdEnv dispatches the `agentry env *` subcommands. Two scopes:
+//
+//   - cluster default (no --sandbox): saved on the laptop under
+//     ~/.ad-sandbox/envs/<cluster>/<NAME>.json; the stdio post-create
+//     hook replays it onto every new sandbox in that cluster. Run-once,
+//     applies to all future sandboxes — what you want for things like
+//     JIRA_TOKEN that belong on every sandbox you spin up.
+//
+//   - sandbox-scoped (--sandbox <id>): goes straight to the
+//     provisioner's /api/sandboxes/{id}/secrets. Only that sandbox
+//     sees it. What you want for per-app overrides or one-off tests.
 //
 // Why this lives on the CLI and not the MCP layer: the value entered
 // here goes through a hidden prompt (term.ReadPassword) — secrets
@@ -29,7 +36,7 @@ import (
 // rejects secret-shaped values to enforce this.
 func cmdEnv(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "agentry env: need a subcommand (set|ls)")
+		fmt.Fprintln(os.Stderr, "agentry env: need a subcommand (set|ls|unset)")
 		return 2
 	}
 	switch args[0] {
@@ -37,6 +44,8 @@ func cmdEnv(args []string) int {
 		return envSet(args[1:])
 	case "ls", "list":
 		return envList(args[1:])
+	case "unset", "rm", "delete":
+		return envUnset(args[1:])
 	default:
 		return die("agentry env: unknown subcommand %q", args[0])
 	}
@@ -44,17 +53,17 @@ func cmdEnv(args []string) int {
 
 func envSet(args []string) int {
 	fs := flag.NewFlagSet("agentry env set", flag.ContinueOnError)
-	sandbox := fs.String("sandbox", "", "target sandbox id (defaults to `agentry sandbox current`)")
+	// Explicit user choice ("") vs unset (""). flag.String returns the
+	// default for both; we distinguish via fs.Lookup("sandbox").
+	sandbox := fs.String("sandbox", "", "target sandbox id (omit = save as cluster default for every sandbox in this cluster)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	rest := fs.Args()
 	if len(rest) < 1 {
-		return die("agentry env set [--sandbox <id>] NAME [VALUE]\n(omit VALUE to be prompted with hidden input)")
-	}
-	sb := resolveSandbox(*sandbox)
-	if sb == "" {
-		return die("no sandbox — pass --sandbox <id> or run `agentry sandbox use <id>` first")
+		return die("agentry env set [--sandbox <id>] NAME [VALUE]\n" +
+			"  (omit VALUE to be prompted with hidden input)\n" +
+			"  (omit --sandbox to save as a cluster default — applied to every sandbox you create on the current server)")
 	}
 	name := rest[0]
 	var value string
@@ -71,19 +80,102 @@ func envSet(args []string) int {
 		value = v
 	}
 
+	if *sandbox == "" {
+		// Cluster-default path. Saves on the laptop; the next
+		// sandbox_create from this CLI replays it onto the new
+		// sandbox via the post-create hook in main.go.
+		cfg, _, err := LoadConfig()
+		if err != nil {
+			return die("load config: %v", err)
+		}
+		if cfg.Cluster == "" {
+			return die("no server set — run `agentry server use <name>` first " +
+				"(or pass --sandbox <id> to set this only on one sandbox)")
+		}
+		if err := saveEnv(cfg.Cluster, &StoredEnv{Name: name, Value: value}); err != nil {
+			return die("save: %v", err)
+		}
+		fmt.Printf("staged %s as cluster default on server %q — applied to every new sandbox\n",
+			name, cfg.Cluster)
+		return 0
+	}
+
+	sb := resolveSandbox(*sandbox)
+	if sb == "" {
+		return die("--sandbox was empty; pass an id or omit the flag to save as a cluster default")
+	}
 	return callProvisioner("POST", "/api/sandboxes/"+sb+"/secrets",
 		map[string]string{"name": name, "value": value, "source": "cli"})
 }
 
-func envList(args []string) int {
-	fs := flag.NewFlagSet("agentry env ls", flag.ContinueOnError)
-	sandbox := fs.String("sandbox", "", "target sandbox id (defaults to `agentry sandbox current`)")
+// envUnset removes a staged value. With --sandbox, removes from that
+// sandbox's runtime secret store. Without, removes the cluster default
+// from the laptop. Independent operations — sandbox-scoped values
+// don't shadow cluster defaults, so you may need to call both.
+func envUnset(args []string) int {
+	fs := flag.NewFlagSet("agentry env unset", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (omit = remove cluster default)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	rest := fs.Args()
+	if len(rest) < 1 {
+		return die("agentry env unset [--sandbox <id>] NAME")
+	}
+	name := rest[0]
+	if *sandbox == "" {
+		cfg, _, err := LoadConfig()
+		if err != nil {
+			return die("load config: %v", err)
+		}
+		if cfg.Cluster == "" {
+			return die("no server set — run `agentry server use <name>` first")
+		}
+		if err := deleteEnv(cfg.Cluster, name); err != nil {
+			return die("delete: %v", err)
+		}
+		fmt.Printf("removed %s cluster default on server %q\n", name, cfg.Cluster)
+		return 0
+	}
 	sb := resolveSandbox(*sandbox)
 	if sb == "" {
-		return die("no sandbox — pass --sandbox <id> or run `agentry sandbox use <id>` first")
+		return die("--sandbox was empty; pass an id or omit the flag")
+	}
+	return callProvisioner("DELETE", "/api/sandboxes/"+sb+"/secrets/"+name, nil)
+}
+
+func envList(args []string) int {
+	fs := flag.NewFlagSet("agentry env ls", flag.ContinueOnError)
+	sandbox := fs.String("sandbox", "", "target sandbox id (omit = list cluster defaults staged on the laptop)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *sandbox == "" {
+		// Cluster-default view — what's staged on the laptop for the
+		// active server. Values are NEVER echoed; only names.
+		cfg, _, err := LoadConfig()
+		if err != nil {
+			return die("load config: %v", err)
+		}
+		if cfg.Cluster == "" {
+			return die("no server set — run `agentry server use <name>` first")
+		}
+		envs, err := listEnvs(cfg.Cluster)
+		if err != nil {
+			return die("list envs: %v", err)
+		}
+		if len(envs) == 0 {
+			fmt.Println("(no cluster-default env vars staged on this laptop for server " + cfg.Cluster + ")")
+			return 0
+		}
+		for _, e := range envs {
+			fmt.Println(e.Name)
+		}
+		return 0
+	}
+	sb := resolveSandbox(*sandbox)
+	if sb == "" {
+		return die("--sandbox was empty; pass an id or omit the flag")
 	}
 
 	cfg, _, err := LoadConfig()
