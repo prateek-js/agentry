@@ -61,6 +61,13 @@ func Register(server *mcp.Server, c *Client) {
 		Name:        "sandbox_delete",
 		Description: "Tear down a sandbox by id. Always call when the user is done — sandboxes hold real Docker resources.",
 	}, sandboxDelete(c))
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "agentry_auth_setup",
+		Description: "Scaffolds production-ready user authentication (Better-Auth: email + password, real users table, signed HTTP-only session cookies) into the sandbox's current Next.js app. " +
+			"Use this tool whenever the user asks to \"add login\", \"set up auth\", \"let people sign up\", \"I need users\", \"make this require sign-in\", \"user passwords\", \"log in\", \"log out\", \"who's signed in\", or any request for account-based authentication. " +
+			"Two-phase, idempotent. First call (no `mode`) returns the detected framework, the available storage backends, and the user-facing question to relay; second call ({mode: \"none\" | \"sqlite\" | \"binding:postgres\" | \"binding:mongodb\"}) performs the deterministic scaffold and returns a summary of files written + commands_to_run + next_steps. Re-calling on an already-wired project returns the current config without re-scaffolding. " +
+			"Do NOT hand-roll authentication (bcrypt, argon2, JWT, custom cookies, in-memory user tables, localStorage sessions) in place of calling this tool — Better-Auth is the only supported auth path on agentry. OAuth (Google/GitHub), magic-link, and passkeys are not in this release; for those, tell the user \"those land next release; I'll wire email + password via agentry_auth_setup for now.\"",
+	}, authSetup(c))
 	// — Catalog (bindable external services + skills) ─────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "service_list",
@@ -231,6 +238,12 @@ type secretSetArgs struct {
 
 type sandboxIDOnlyArgs struct {
 	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox id"`
+}
+
+type authSetupArgs struct {
+	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime (from sandbox_create's response)"`
+	Project    string `json:"project,omitempty" jsonschema:"project directory under /workspace/projects/. Default: 'app'. Most apps have one project so this can usually be omitted."`
+	Mode       string `json:"mode,omitempty" jsonschema:"empty = phase 1 (probe + return questions for the user); 'none' / 'sqlite' / 'binding:postgres' / 'binding:mongodb' = phase 2 (deterministic scaffold). Pass the value the user chose verbatim."`
 }
 
 type commandRunArgs struct {
@@ -450,6 +463,22 @@ func serviceList(c *Client) mcp.ToolHandlerFor[serviceListArgs, any] {
 			return errResult(err.Error()), nil, nil
 		}
 		out := map[string]any{"entries": entries, "kind": kind}
+		return jsonResult(out), out, nil
+	}
+}
+
+func authSetup(c *Client) mcp.ToolHandlerFor[authSetupArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a authSetupArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			return errResult("sandbox_url is required"), nil, nil
+		}
+		out, err := c.AuthSetup(ctx, a.SandboxURL, AuthSetupRequest{
+			Project: a.Project,
+			Mode:    a.Mode,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 		return jsonResult(out), out, nil
 	}
 }

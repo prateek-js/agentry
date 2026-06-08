@@ -211,6 +211,12 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	mux.HandleFunc("POST /v1/project/stop", handlers.ProjectStopHandler(projectMgr))
 	mux.HandleFunc("POST /v1/project/restart", handlers.ProjectRestartHandler(projectMgr))
 	mux.HandleFunc("POST /v1/project/start-all", handlers.ProjectStartAllHandler(projectMgr))
+
+	// Auth scaffolding — agentry_auth_setup MCP tool calls this to
+	// deterministically wire Better-Auth into the current project.
+	// Two-phase: empty body probes the project + returns the questions
+	// envelope; {"mode":"sqlite"|"binding:..."} runs the scaffold.
+	mux.HandleFunc("POST /v1/auth/setup", handlers.AuthSetupHandler)
 	mux.HandleFunc("POST /v1/project/stop-all", handlers.ProjectStopAllHandler(projectMgr))
 	mux.HandleFunc("GET /v1/project/list", handlers.ProjectListHandler(projectMgr))
 	mux.HandleFunc("GET /v1/project/logs", handlers.ProjectLogsHandler(projectMgr))

@@ -457,6 +457,25 @@ func (c *Client) ProjectStartAll(ctx context.Context, sandboxURL string) (map[st
 	return out, err
 }
 
+// ── Auth scaffolding ──────────────────────────────────────────────────────
+
+// AuthSetupRequest mirrors handlers.authSetupRequest on the wire.
+// Project defaults to "app" server-side when empty. Mode empty = phase 1
+// (probe + return questions envelope); mode set = phase 2 (scaffold).
+type AuthSetupRequest struct {
+	Project string `json:"project,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+}
+
+// AuthSetup invokes POST /v1/auth/setup. Returns the runtime's
+// response verbatim so the MCP tool can echo it to the LLM — the
+// shape covers both phases (probe + scaffold).
+func (c *Client) AuthSetup(ctx context.Context, sandboxURL string, req AuthSetupRequest) (map[string]any, error) {
+	var out map[string]any
+	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/auth/setup", req, &out)
+	return out, err
+}
+
 // ── Code interpreter (Jupyter kernels) ────────────────────────────────────
 
 type CodeContextCreateRequest struct {

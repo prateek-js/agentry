@@ -1,0 +1,15 @@
+// Client-side Better-Auth SDK. Imports anywhere a component needs to
+// call signIn / signUp / signOut / useSession.
+//
+// baseURL pinned to window.location.origin so the client always calls
+// the SAME host the user is on — never falls back to BETTER_AUTH_URL
+// (which is server-only and might point at localhost while the user's
+// browser is on a preview/deploy/custom domain). Empty string during
+// SSR; the SDK only fires fetches in the browser anyway.
+import { createAuthClient } from "better-auth/react"
+
+export const authClient = createAuthClient({
+  baseURL: typeof window !== "undefined" ? window.location.origin : "",
+})
+
+export const { signIn, signUp, signOut, useSession } = authClient

@@ -1,0 +1,108 @@
+// Better-Auth server config. Email + password sign-in; OAuth is wired
+// dormant below — set the env vars to activate it without re-scaffolding.
+//
+// THE ARCHITECTURE BEHIND THE THREE TRICKY KNOBS:
+//
+//   1. baseURL / public origin. We never hardcode the app's URL.
+//      `trustedOrigins` is a function so the actual hostname is read
+//      from X-Forwarded-Host on every request — same code path works
+//      for localhost dev, agentry preview URLs (random hex per share),
+//      agentry deploys, custom domains, and self-hosting behind any
+//      reverse proxy (Caddy/Traefik/nginx).
+//
+//   2. Cookie Secure flag. `useSecureCookies` is true in production
+//      and false in dev. The browser drops Secure cookies on http://
+//      so dev (npm run dev → http://localhost:3000) needs them off,
+//      while every production path (which terminates TLS at the
+//      proxy) needs them on.
+//
+//   3. Tables. Better-Auth's Kysely adapter does NOT auto-migrate.
+//      auth-schema.ts runs CREATE TABLE IF NOT EXISTS at module load
+//      so the first sign-up doesn't 500 with "no such table: user".
+//
+import { betterAuth } from "better-auth"
+import { kyselyAdapter } from "@better-auth/kysely-adapter"
+import { nextCookies } from "better-auth/next-js"
+{{- if eq .Storage "sqlite" }}
+import { Kysely, SqliteDialect } from "kysely"
+import Database from "better-sqlite3"
+import { ensureAuthSchema } from "./auth-schema"
+
+const sqlite = new Database("{{ .SQLitePath }}")
+ensureAuthSchema(sqlite)
+const db = new Kysely<any>({ dialect: new SqliteDialect({ database: sqlite }) })
+{{- else if eq .Storage "postgres" }}
+import { Kysely, PostgresDialect } from "kysely"
+import { Pool } from "pg"
+import { ensureAuthSchema } from "./auth-schema"
+
+const pool = new Pool({ connectionString: process.env.{{ .EnvVarName }} })
+await ensureAuthSchema(pool)
+const db = new Kysely<any>({ dialect: new PostgresDialect({ pool }) })
+{{- else if eq .Storage "mongodb" }}
+import { mongodbAdapter } from "@better-auth/mongodb-adapter"
+import { MongoClient } from "mongodb"
+
+const client = new MongoClient(process.env.{{ .EnvVarName }}!)
+const mongo = client.db()
+// Mongo is schemaless; no migration step.
+{{- end }}
+
+const isDev = process.env.NODE_ENV !== "production"
+
+export const auth = betterAuth({
+{{- if eq .Storage "mongodb" }}
+  database: mongodbAdapter(mongo),
+{{- else if eq .Storage "postgres" }}
+  database: kyselyAdapter(db, { type: "postgres" }),
+{{- else }}
+  database: kyselyAdapter(db, { type: "sqlite" }),
+{{- end }}
+  emailAndPassword: {
+    enabled: true,
+    autoSignIn: true,  // sign in immediately after sign-up — one fewer round trip
+  },
+
+  // Trust the public host the proxy is forwarding. Works identically
+  // on every host this app might be served from. If you want to lock
+  // down to a specific list (e.g. revoke a phished domain), replace
+  // this function with a static array.
+  trustedOrigins: async (request) => {
+    const proto = request.headers.get("x-forwarded-proto") || (isDev ? "http" : "https")
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost:3000"
+    return [`${proto}://${host}`]
+  },
+
+  advanced: {
+    useSecureCookies: !isDev,
+    crossSubdomainCookies: { enabled: false },
+  },
+
+  // nextCookies makes Server Actions and route handlers set cookies
+  // on the same response the user is about to navigate with — needed
+  // for the post-sign-in redirect to actually carry the session.
+  plugins: [nextCookies()],
+
+  // OAuth providers are dormant. Set GOOGLE_CLIENT_ID and
+  // GOOGLE_CLIENT_SECRET (in the dashboard's env editor or your
+  // .env.local), restart, and the "Continue with Google" button on
+  // /sign-in lights up. Add GitHub the same way. See README-AUTH.md.
+  socialProviders: {
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? {
+          google: {
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          },
+        }
+      : {}),
+    ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+      ? {
+          github: {
+            clientId: process.env.GITHUB_CLIENT_ID,
+            clientSecret: process.env.GITHUB_CLIENT_SECRET,
+          },
+        }
+      : {}),
+  },
+})
