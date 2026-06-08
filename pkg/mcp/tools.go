@@ -45,17 +45,18 @@ func Register(server *mcp.Server, c *Client) {
 	// — Lifecycle ───────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_create",
-		Description: "Spin up a fresh isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id` (the ACTUAL allocated id — may differ from what you asked for; see below), and `bindings` — the services the operator has pre-wired into this sandbox (each entry lists the env var names you read at runtime). " +
-			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ the `bindings` array — if a service is listed there, your code reads the env vars verbatim; DO NOT bind it again, DO NOT spin up an in-process substitute. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
+		Description: "Spin up a fresh isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id` (the ACTUAL allocated id — may differ from what you asked for; see below), `bindings` (services the operator has pre-wired into this sandbox — each entry lists the env var names you read at runtime), and `env` (NAMES of additional env vars / secrets already loaded in the sandbox; values are never returned). " +
+			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ BOTH the `bindings` AND `env` arrays from the RESPONSE before deciding any service or credential is missing. If a service is in `bindings`, your code reads the listed env vars verbatim — DO NOT bind it again, DO NOT spin up an in-process substitute. If a name like `JIRA_TOKEN` / `SLACK_BOT_TOKEN` / `STRIPE_SECRET_KEY` is in `env`, the value is already in process.env inside the sandbox — DO NOT ask the user to provide it, DO NOT prompt for it, just use it. When the user names a service by name (\"jira\", \"slack\", \"stripe\", \"openai\", …) ALWAYS scan both arrays for a matching token BEFORE saying it isn't configured. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
 			"Pass any descriptive `sandbox_id` (e.g. \"ecommerce-store\"). If that name is already taken by an unrelated sandbox, the server auto-allocates a fresh suffixed name (e.g. \"ecommerce-store-7f2a\") so you DON'T overwrite the existing one. " +
 			"ALWAYS use the `sandbox_id` from the RESPONSE for every follow-up tool call in this conversation — never the one you passed in. " +
 			"Set `reuse_existing: true` only when you genuinely want to attach to an existing sandbox by name (rare; typical use case is a CLI `attach` flow, not an LLM creating a new project).",
 	}, sandboxCreate(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_list",
-		Description: "Inspect sandboxes the provisioner manages. " +
-			"With no `sandbox_id`: returns ALL sandboxes (url, status, ttl). " +
-			"With `sandbox_id`: returns full details for that one — use this if you lost the URL from sandbox_create.",
+		Description: "STATUS DISPLAY ONLY — for telling the user what's running. NEVER use this to pick a sandbox to write into. Every sandbox listed here holds a DIFFERENT project; writing into it overwrites someone else's work. For a new task ALWAYS call sandbox_create (it auto-suffixes if the name is taken — you get a fresh sandbox, you do NOT collide with an existing one). " +
+			"If sandbox_create fails, REPORT the failure to the user and STOP — do not fall back to listing and reusing a survivor; that's the bug, not the workaround. " +
+			"With no `sandbox_id`: returns `{sandbox_id, status}` for each sandbox — URLs intentionally omitted so the LLM can't accidentally target someone else's project. " +
+			"With `sandbox_id`: returns full details (including sandbox_url) — ONLY call with sandbox_id when the USER explicitly names that sandbox (\"open my-store again\", \"keep working in jira-dash\"); never to recover from a failed create.",
 	}, sandboxList(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "sandbox_delete",
@@ -126,30 +127,66 @@ func Register(server *mcp.Server, c *Client) {
 	// — Files ───────────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_read",
-		Description: "Read a file. Pass `start_line`+`end_line` to slice a big file. " +
-			"Returns 403 on /etc/sandbox/creds/* — read those in your code, not through this tool.",
+		Description: "Read a file. Output is line-numbered (cat -n style) by default so you can refer to specific lines in follow-up edits without inventing anchors. The response includes `total_lines` — compare to your slice's end_line to know if you saw the whole file. " +
+			"Pass `start_line`+`end_line` (both 1-based, inclusive) to read a window of a large file; the runtime streams line-by-line so a 10k-line file doesn't pay to load all 10k for a 50-line slice. " +
+			"Set `format: \"raw\"` to drop the line numbers (useful when piping into another tool). " +
+			"Returns 403 on /etc/sandbox/creds/* — read those from app code, not via this tool.",
 	}, fileRead(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_write",
-		Description: "Write a file (overwrite by default; `append=true` to extend). Creates parent dirs automatically — no `mkdir -p` needed. " +
-			"THIS IS THE TOOL FOR CREATING FILES. Heredocs via `command_run` (`cat > x <<EOF`, `tee`, `printf > x`, `echo > x`, `python3 -c open(...).write(...)`) are FORBIDDEN — 100-300 ms PTY round-trip vs ~5 ms direct os.WriteFile here.",
+		Description: "Write a file (atomic overwrite via tmp+rename by default; `append=true` to extend). Creates parent dirs automatically — no `mkdir -p` needed. " +
+			"THIS IS THE TOOL FOR CREATING FILES. Heredocs via `command_run` (`cat > x <<EOF`, `tee`, `printf > x`, `echo > x`, `python3 -c open(...).write(...)`) are FORBIDDEN — 100-300 ms PTY round-trip vs ~5 ms direct os.WriteFile here. " +
+			"For editing an existing file, prefer `file_replace` (one change) or `file_multi_edit` (several changes, atomic) — both are diff-sized over the wire instead of resending the whole file. " +
+			"DO NOT write `.sandbox-project.json` directly — use `project_create` (it picks the right start_command for your kind, scaffolds the starter files, and gets the lifecycle right). file_write to that path bypasses the project pattern and produces sandboxes the LLM can't reliably operate.",
 	}, fileWrite(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_list",
 		Description: "Enumerate paths under a directory. " +
 			"`recursive=true` walks subdirs. " +
-			"`glob` (e.g. `**/*.py`, `src/*.tsx`) filters to matching paths — set this to use this tool as a find. " +
-			"For content search inside a file, use `file_search`.",
+			"`glob` (e.g. `**/*.py`, `src/*.tsx`, `**/*.{ts,tsx,json}`) filters to matching paths. Doublestar globs and brace alternation are both supported. " +
+			"For content search across many files, use `file_grep`; for inside one file, use `file_search`.",
 	}, fileList(c))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "file_search",
-		Description: "Regex-search inside ONE file. Returns matching lines + 1-based line numbers. For multi-file grep, use command_run with grep.",
-	}, fileSearch(c))
+		Name: "docs_read",
+		Description: "Read a baked-in operator cheat-sheet from /etc/sandbox/docs/. PREFER this over file_read or command_run (`cat`, `find`) when reaching for a doc — the docs are INSIDE the sandbox container, NOT on your host. NEVER run `find /` to locate them.\n\n" +
+			"Available names (you can omit the .md suffix):\n" +
+			"  • README                                 — the recipe router (read first)\n" +
+			"  • coding-style                           — house code rules\n" +
+			"  • projects                               — project manifest schema\n" +
+			"  • app                                    — Next.js recipe\n" +
+			"  • static-html                            — vanilla HTML recipe\n" +
+			"  • streamlit                              — Streamlit recipe\n" +
+			"  • fastapi                                — FastAPI recipe\n" +
+			"  • python-script                          — long-running Python recipe\n" +
+			"  • skills/frontend-design                 — design principles; READ before any CSS/HTML/JSX\n" +
+			"  • skills/frontend-design/references/ai-tells     — AI-slop patterns to refuse\n" +
+			"  • skills/frontend-design/references/design-rules — hard typographic/color rules\n" +
+			"  • skills/theme-factory                   — themes index\n" +
+			"  • skills/theme-factory/styles-catalog    — 50+ named styles (bento, neobrutalist, sekiro, …)\n" +
+			"  • skills/theme-factory/themes/<theme>    — one of: arctic-frost, botanical-garden, desert-rose, forest-canopy, golden-hour, midnight-galaxy, modern-minimalist, ocean-depths, sunset-boulevard, tech-innovation\n" +
+			"  • skills/brand-guidelines                — brand consistency\n" +
+			"  • skills/webapp-testing                  — Playwright + screenshot testing\n" +
+			"  • skills/web-artifacts-builder           — single-file HTML artifacts",
+	}, docsRead(c))
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "file_grep",
+		Description: "Multi-file regex search. Walks `path`, optionally filtering by `glob` (doublestar; e.g. `**/*.ts`), skips binary files, and returns structured `{file, line, text}` matches with optional `context_before`/`context_after` lines. " +
+			"Default cap is 200 matches; `truncated: true` in the response means there were more. " +
+			"PREFER over `command_run` + grep — structured output, no shell parsing, sandbox-side filtering.",
+	}, fileGrep(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_replace",
-		Description: "Replace every occurrence of literal `old_str` with `new_str` in one file (atomic). " +
-			"For complex edits, do file_read → modify in code → file_write.",
+		Description: "Replace literal `old_str` with `new_str` in one file. STRICT BY DEFAULT: if `old_str` matches more than once, the call ERRORS with the actual count instead of clobbering every site. " +
+			"To rename across all occurrences, pass `replace_all: true`. To assert a specific count (paranoia mode), pass `expected_matches: N`. " +
+			"Atomic write via temp file + rename — a crash mid-write can't leave a corrupted source file. " +
+			"For multiple edits to the SAME file, prefer `file_multi_edit` — one round-trip instead of N, all-or-nothing.",
 	}, fileReplace(c))
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "file_multi_edit",
+		Description: "Apply several edits to ONE file in a single atomic call. Each edit is a `{old_str, new_str, expected_matches?, replace_all?}` step with the same strict semantics as `file_replace`. Steps run sequentially — each operates on the result of the previous — and the file is written ONLY if every step succeeds (all-or-nothing). " +
+			"USE THIS instead of N separate `file_replace` calls when refactoring: ~10× faster (one HTTP round-trip vs N) and you can't leave the file half-edited. " +
+			"Max 100 edits per call.",
+	}, fileMultiEdit(c))
 
 	// — Ports ───────────────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
@@ -160,21 +197,27 @@ func Register(server *mcp.Server, c *Client) {
 
 	// — Project manager ─────────────────────────────────────────────────
 	mcp.AddTool(server, &mcp.Tool{
+		Name: "project_create",
+		Description: "Scaffold a managed project at /workspace/projects/<name>/. ALWAYS use this to set up a project — writing `.sandbox-project.json` by hand via `file_write` is FORBIDDEN. " +
+			"`kind` picks the template:\n" +
+			"  • nextjs        — Next.js App Router; follow app.md to flesh out the actual app, then project_start\n" +
+			"  • static-html   — vanilla HTML/CSS/JS served by `python3 -m http.server`. The right choice for landing pages, marketing, microsites, portfolios — anything where you'd otherwise tell the user to run a static server.\n" +
+			"  • streamlit     — Python data app; scaffolds app.py + requirements.txt + start_command\n" +
+			"  • fastapi       — Python API; scaffolds app.py + requirements.txt + uvicorn start_command\n" +
+			"  • python-script — long-running Python process (worker, batch job); scaffolds main.py\n" +
+			"  • custom        — bring your own start_command (REQUIRED argv array when kind=custom)\n" +
+			"Scaffold returns the manifest path + the starter files written + the start_command + a next_step hint. Stubs are minimal — overwrite them. " +
+			"NEVER tell the user to run a server themselves (no `python3 -m http.server` instructions, no `npm run dev`, no `streamlit run` — the project manager owns the lifecycle, ports, restarts, and logs).",
+	}, projectCreate(c))
+	mcp.AddTool(server, &mcp.Tool{
 		Name: "project_start",
-		Description: "Start a managed project. Reads `/workspace/projects/<name>/.sandbox-project.json` " +
-			"(fields: `start_command` ARGV ARRAY, optional `auto_restart`, `health_check`, `depends_on`, `env`, `env_file`). " +
-			"`restart=true` stop+starts. Auto-resolves `depends_on` so calling `project_start(\"frontend\")` cascades to backend. " +
-			"DEFAULT this over command_start for any server the user will touch more than once. Manifest format: /etc/sandbox/docs/projects.md.",
+		Description: "Start the sandbox's managed project. Reads `/workspace/projects/<name>/.sandbox-project.json` (scaffolded by `project_create`). `restart=true` stop+starts. " +
+			"DEFAULT this over command_start for any server the user will touch more than once — bare command_start doesn't get auto-restart, port discovery, or log capture.",
 	}, projectStart(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "project_stop",
 		Description: "Stop a managed project (SIGTERM the process group, SIGKILL after grace).",
 	}, projectStop(c))
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "project_start_all",
-		Description: "Bring up EVERY project under /workspace/projects/, respecting per-project `depends_on` order. " +
-			"Use this for multi-service apps (backend + frontend + worker) instead of multiple `project_start` calls.",
-	}, projectStartAll(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "project_list",
 		Description: "List managed projects with status, pid, discovered `ports[]`, uptime, restart_count, health, last_error. " +
@@ -241,13 +284,13 @@ type sandboxIDOnlyArgs struct {
 }
 
 type authSetupArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime (from sandbox_create's response)"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Project    string `json:"project,omitempty" jsonschema:"project directory under /workspace/projects/. Default: 'app'. Most apps have one project so this can usually be omitted."`
 	Mode       string `json:"mode,omitempty" jsonschema:"empty = phase 1 (probe + return questions for the user); 'none' / 'sqlite' / 'binding:postgres' / 'binding:mongodb' = phase 2 (deterministic scaffold). Pass the value the user chose verbatim."`
 }
 
 type commandRunArgs struct {
-	SandboxURL string  `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string  `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Command    string  `json:"command" jsonschema:"the shell command to execute"`
 	SessionID  string  `json:"session_id,omitempty" jsonschema:"persistent bash PTY id; same id keeps cwd & env"`
 	ExecDir    string  `json:"exec_dir,omitempty" jsonschema:"working directory for the command"`
@@ -255,87 +298,120 @@ type commandRunArgs struct {
 }
 
 type commandStartArgs struct {
-	SandboxURL string            `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string            `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Command    string            `json:"command" jsonschema:"the shell command to spawn (e.g. 'python3 -m http.server 8000')"`
 	ExecDir    string            `json:"exec_dir,omitempty" jsonschema:"working directory; defaults to /workspace"`
 	Env        map[string]string `json:"env,omitempty" jsonschema:"extra env vars to set"`
 }
 
 type commandLogsArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	ID         string `json:"id,omitempty" jsonschema:"optional: omit to list all background commands; pass an id to get status + logs for one"`
 	Cursor     int64  `json:"cursor,omitempty" jsonschema:"byte offset to start reading from (only used when id is set); pass back the cursor from the previous call"`
 }
 
 type commandIDArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	ID         string `json:"id" jsonschema:"the background command id returned by command_start"`
 }
 
+type docsReadArgs struct {
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	Name       string `json:"name" jsonschema:"doc name relative to /etc/sandbox/docs/, with or without the .md suffix (e.g. 'README', 'app', 'skills/frontend-design', 'skills/theme-factory/themes/sunset-boulevard'). See the tool description for the full list."`
+}
+
 type fileReadArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	File       string `json:"file" jsonschema:"absolute file path inside the sandbox"`
 	StartLine  int    `json:"start_line,omitempty" jsonschema:"1-based start line (optional)"`
 	EndLine    int    `json:"end_line,omitempty" jsonschema:"inclusive end line (optional)"`
+	Format     string `json:"format,omitempty" jsonschema:"'numbered' (default, cat -n style — refer to lines verbatim) or 'raw' (no line numbers)"`
 }
 
 type fileWriteArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	File       string `json:"file" jsonschema:"absolute file path inside the sandbox"`
 	Content    string `json:"content" jsonschema:"file content to write"`
 	Append     bool   `json:"append,omitempty" jsonschema:"true to append instead of overwrite"`
 }
 
 type fileListArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Path       string `json:"path" jsonschema:"directory path inside the sandbox"`
 	Recursive  bool   `json:"recursive,omitempty" jsonschema:"recurse into subdirectories"`
 	Glob       string `json:"glob,omitempty" jsonschema:"optional glob filter (e.g. '**/*.py'); when set, results contain only matching paths"`
 }
 
-type fileSearchArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
-	File       string `json:"file" jsonschema:"absolute file path to search in"`
-	Regex      string `json:"regex" jsonschema:"regular expression to match against each line"`
+type fileReplaceArgs struct {
+	SandboxURL      string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	File            string `json:"file" jsonschema:"absolute file path"`
+	OldStr          string `json:"old_str" jsonschema:"literal string to find. Must be UNIQUE in the file by default — if it isn't, the call errors with the actual match count. Add surrounding context (or set replace_all) to make it unambiguous."`
+	NewStr          string `json:"new_str" jsonschema:"replacement"`
+	ReplaceAll      bool   `json:"replace_all,omitempty" jsonschema:"true to opt into clobbering every occurrence of old_str (renames, bulk updates). Default is strict single-match."`
+	ExpectedMatches int    `json:"expected_matches,omitempty" jsonschema:"assert old_str appears exactly N times before touching the file; the call errors if the actual count differs. Use when you know the count up-front (e.g. from a prior file_grep)."`
 }
 
-type fileReplaceArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
-	File       string `json:"file" jsonschema:"absolute file path"`
-	OldStr     string `json:"old_str" jsonschema:"literal string to find"`
-	NewStr     string `json:"new_str" jsonschema:"replacement"`
+type fileMultiEditArgs struct {
+	SandboxURL string             `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	File       string             `json:"file" jsonschema:"absolute file path"`
+	Edits      []fileMultiEditOp  `json:"edits" jsonschema:"ordered list of edits to apply. Each step operates on the result of the previous; the file is written only if every step succeeds."`
+}
+
+type fileMultiEditOp struct {
+	OldStr          string `json:"old_str" jsonschema:"literal string to find (must be unique by default — same semantics as file_replace)"`
+	NewStr          string `json:"new_str" jsonschema:"replacement"`
+	ReplaceAll      bool   `json:"replace_all,omitempty" jsonschema:"true to opt into clobbering every occurrence in this step"`
+	ExpectedMatches int    `json:"expected_matches,omitempty" jsonschema:"assert N matches for this step's old_str"`
+}
+
+type fileGrepArgs struct {
+	SandboxURL    string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	Path          string `json:"path" jsonschema:"directory to walk (e.g. '/workspace/projects/app/src')"`
+	Regex         string `json:"regex" jsonschema:"RE2 regular expression matched against each line"`
+	Glob          string `json:"glob,omitempty" jsonschema:"doublestar glob filter applied to file paths relative to path (e.g. '**/*.ts', '**/*.{ts,tsx,json}'). Omit to scan every text file under path."`
+	MaxResults    int    `json:"max_results,omitempty" jsonschema:"cap on returned matches (default 200). total_found in the response is the uncapped count."`
+	ContextBefore int    `json:"context_before,omitempty" jsonschema:"lines of context BEFORE each match (default 0)"`
+	ContextAfter  int    `json:"context_after,omitempty" jsonschema:"lines of context AFTER each match (default 0)"`
 }
 
 type portWaitArgs struct {
-	SandboxURL     string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL     string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Port           int    `json:"port" jsonschema:"TCP port to wait for"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max wait in seconds; default 30"`
 }
 
+type projectCreateArgs struct {
+	SandboxURL   string   `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	Name         string   `json:"name" jsonschema:"project directory name under /workspace/projects/. Use the deliverable's short name (e.g. 'landing', 'jira-dash'). One path segment, no slashes."`
+	Kind         string   `json:"kind" jsonschema:"template to scaffold: nextjs | static-html | streamlit | fastapi | python-script | custom"`
+	StartCommand []string `json:"start_command,omitempty" jsonschema:"argv array. REQUIRED only when kind=custom; ignored otherwise. Example: ['node', 'server.js']"`
+	Port         int      `json:"port,omitempty" jsonschema:"override the default port for the kind (static-html 8000, streamlit 8501, fastapi 8000). Most kinds work fine on defaults."`
+}
+
 type projectStartArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Name       string `json:"name" jsonschema:"project name (the directory under /workspace/projects containing .sandbox-project.json)"`
 	Restart    bool   `json:"restart,omitempty" jsonschema:"if true and the project is already running, stop then start it"`
 }
 
 type projectNameArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Name       string `json:"name" jsonschema:"project name (the directory under /workspace/projects containing .sandbox-project.json)"`
 }
 
 type sandboxURLOnlyArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 }
 
 type codeExecArgs struct {
-	SandboxURL     string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL     string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	ContextID      string `json:"context_id,omitempty" jsonschema:"kernel id; new id = auto-spawn; omit = auto-generate. Reuse the returned context_id to keep state."`
 	Code           string `json:"code" jsonschema:"Python source. The last line, if it's an expression, becomes the structured 'result' in the response."`
 	TimeoutSeconds int    `json:"timeout,omitempty" jsonschema:"max wall-clock for this execution in seconds (default 30)"`
 }
 
 type codeContextIDArgs struct {
-	SandboxURL string `json:"sandbox_url" jsonschema:"the http(s) URL of the sandbox runtime"`
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	ContextID  string `json:"context_id" jsonschema:"the context id to close"`
 }
 
@@ -355,6 +431,12 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxCreat
 		if err != nil {
 			return errResult(err.Error()), SandboxCreateResult{}, nil
 		}
+		// Cache the runtime URL so every later file/command/project/
+		// port/code tool in this MCP session can omit sandbox_url and
+		// fall back to this value. Saves ~60 tokens per call and gets
+		// rid of the awkward bridge.invalid URL the LLM kept having
+		// to rationalize about.
+		c.SetLastSandboxURL(info.SandboxURL)
 		// Best-effort: apply any cluster-default service binds the
 		// user staged via `agentry service bind <service>`. A failure
 		// here doesn't void the create — the LLM still gets a
@@ -373,14 +455,36 @@ func sandboxCreate(c *Client) mcp.ToolHandlerFor[sandboxCreateArgs, SandboxCreat
 		if listErr != nil {
 			log.Printf("sandbox_create: list-bindings post-hook: %v", listErr)
 		}
-		result := SandboxCreateResult{SandboxInfo: info, Bindings: bindings}
+		// Same idea for staged env vars / secrets — surface the NAMES
+		// (the values never leave the sandbox) so the LLM can match a
+		// user-named service (JIRA, Slack, …) against what's already
+		// loaded before declaring a credential is missing. The list
+		// endpoint is names-only by contract.
+		envNames, envErr := c.ListSecrets(ctx, info.SandboxID)
+		if envErr != nil {
+			log.Printf("sandbox_create: list-secrets post-hook: %v", envErr)
+		}
+		result := SandboxCreateResult{SandboxInfo: info, Bindings: bindings, Env: envNames}
 		return jsonResult(result), result, nil
 	}
 }
 
+// sandboxListEntry is the trimmed shape sandbox_list returns when no
+// sandbox_id is given — deliberately NO sandbox_url. Returning URLs
+// by default invites the LLM to grab any URL it sees and start
+// writing files there, even if it didn't create that sandbox. Forcing
+// a follow-up sandbox_list?sandbox_id=… to get a URL turns "browse +
+// reuse" into an explicit, named "I'm targeting THIS one" gesture.
+type sandboxListEntry struct {
+	SandboxID string `json:"sandbox_id"`
+	Status    string `json:"status"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
 // sandboxList is polymorphic: with sandbox_id present, returns one
-// sandbox's details; without, returns all sandboxes. Output type is
-// `any` so the JSON shape can flex between array and single object.
+// sandbox's full details (incl. sandbox_url); without, returns the
+// trimmed entries above. Output type is `any` so the JSON shape can
+// flex between array and single object.
 func sandboxList(c *Client) mcp.ToolHandlerFor[sandboxListArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxListArgs) (*mcp.CallToolResult, any, error) {
 		if a.SandboxID != "" {
@@ -394,7 +498,22 @@ func sandboxList(c *Client) mcp.ToolHandlerFor[sandboxListArgs, any] {
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		out := map[string]any{"sandboxes": list}
+		entries := make([]sandboxListEntry, len(list))
+		for i, s := range list {
+			entries[i] = sandboxListEntry{
+				SandboxID: s.SandboxID,
+				Status:    s.Status,
+				ExpiresAt: s.ExpiresAt,
+			}
+		}
+		// Inline warning is on purpose — when the LLM is mid-mistake
+		// (sandbox_create failed, falling back to list+pick) this note
+		// reaches it at the exact moment it would otherwise pick a
+		// random sandbox to write into.
+		out := map[string]any{
+			"sandboxes": entries,
+			"note":      "sandbox_url is intentionally NOT returned here. These are OTHER projects — writing into one destroys someone else's work. For a NEW task call sandbox_create. Only if the user EXPLICITLY names a sandbox here (e.g. \"open my-store again\") should you call sandbox_list with that sandbox_id to get its URL.",
+		}
 		return jsonResult(out), out, nil
 	}
 }
@@ -470,6 +589,9 @@ func serviceList(c *Client) mcp.ToolHandlerFor[serviceListArgs, any] {
 func authSetup(c *Client) mcp.ToolHandlerFor[authSetupArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a authSetupArgs) (*mcp.CallToolResult, any, error) {
 		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
+		if a.SandboxURL == "" {
 			return errResult("sandbox_url is required"), nil, nil
 		}
 		out, err := c.AuthSetup(ctx, a.SandboxURL, AuthSetupRequest{
@@ -498,6 +620,9 @@ func sandboxDelete(c *Client) mcp.ToolHandlerFor[sandboxIDArgs, any] {
 
 func commandRun(c *Client) mcp.ToolHandlerFor[commandRunArgs, ExecResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a commandRunArgs) (*mcp.CallToolResult, ExecResult, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Command == "" {
 			return errResult("sandbox_url and command are required"), ExecResult{}, nil
 		}
@@ -513,6 +638,9 @@ func commandRun(c *Client) mcp.ToolHandlerFor[commandRunArgs, ExecResult] {
 
 func commandStart(c *Client) mcp.ToolHandlerFor[commandStartArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a commandStartArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Command == "" {
 			return errResult("sandbox_url and command are required"), nil, nil
 		}
@@ -531,6 +659,9 @@ func commandStart(c *Client) mcp.ToolHandlerFor[commandStartArgs, any] {
 // all background commands with their current status snapshots.
 func commandLogs(c *Client) mcp.ToolHandlerFor[commandLogsArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a commandLogsArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" {
 			return errResult("sandbox_url is required"), nil, nil
 		}
@@ -556,6 +687,9 @@ func commandLogs(c *Client) mcp.ToolHandlerFor[commandLogsArgs, any] {
 
 func commandInterrupt(c *Client) mcp.ToolHandlerFor[commandIDArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a commandIDArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.ID == "" {
 			return errResult("sandbox_url and id are required"), nil, nil
 		}
@@ -567,13 +701,49 @@ func commandInterrupt(c *Client) mcp.ToolHandlerFor[commandIDArgs, any] {
 	}
 }
 
+func docsRead(c *Client) mcp.ToolHandlerFor[docsReadArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a docsReadArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
+		if a.SandboxURL == "" || a.Name == "" {
+			return errResult("sandbox_url and name are required"), nil, nil
+		}
+		// Normalise: strip leading /, append .md if missing, refuse
+		// path traversal so the LLM can't dodge out of /etc/sandbox/docs
+		// into /etc/sandbox/creds via "../creds/...".
+		name := strings.TrimLeft(a.Name, "/")
+		if strings.Contains(name, "..") {
+			return errResult("docs name must not contain '..'"), nil, nil
+		}
+		if !strings.HasSuffix(name, ".md") {
+			name += ".md"
+		}
+		path := "/etc/sandbox/docs/" + name
+		out, err := c.ReadFile(ctx, a.SandboxURL, FileReadRequest{File: path, Format: "raw"})
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		return jsonResult(out), out, nil
+	}
+}
+
 func fileRead(c *Client) mcp.ToolHandlerFor[fileReadArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileReadArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.File == "" {
 			return errResult("sandbox_url and file are required"), nil, nil
 		}
+		// Default to numbered output so the LLM can refer to lines by
+		// number in follow-up edits. Caller can opt out with "raw".
+		format := a.Format
+		if format == "" {
+			format = "numbered"
+		}
 		out, err := c.ReadFile(ctx, a.SandboxURL, FileReadRequest{
-			File: a.File, StartLine: a.StartLine, EndLine: a.EndLine,
+			File: a.File, StartLine: a.StartLine, EndLine: a.EndLine, Format: format,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil, nil
@@ -584,6 +754,9 @@ func fileRead(c *Client) mcp.ToolHandlerFor[fileReadArgs, any] {
 
 func fileWrite(c *Client) mcp.ToolHandlerFor[fileWriteArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileWriteArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.File == "" {
 			return errResult("sandbox_url and file are required"), nil, nil
 		}
@@ -602,6 +775,9 @@ func fileWrite(c *Client) mcp.ToolHandlerFor[fileWriteArgs, any] {
 // matching paths.
 func fileList(c *Client) mcp.ToolHandlerFor[fileListArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileListArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Path == "" {
 			return errResult("sandbox_url and path are required"), nil, nil
 		}
@@ -624,12 +800,27 @@ func fileList(c *Client) mcp.ToolHandlerFor[fileListArgs, any] {
 	}
 }
 
-func fileSearch(c *Client) mcp.ToolHandlerFor[fileSearchArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileSearchArgs) (*mcp.CallToolResult, any, error) {
-		if a.SandboxURL == "" || a.File == "" || a.Regex == "" {
-			return errResult("sandbox_url, file, and regex are required"), nil, nil
+func fileReplace(c *Client) mcp.ToolHandlerFor[fileReplaceArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileReplaceArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
 		}
-		out, err := c.SearchInFile(ctx, a.SandboxURL, FileSearchRequest{File: a.File, Regex: a.Regex})
+		if a.SandboxURL == "" || a.File == "" {
+			return errResult("sandbox_url and file are required"), nil, nil
+		}
+		req := FileReplaceRequest{File: a.File, OldStr: a.OldStr, NewStr: a.NewStr}
+		// Only forward the strict knobs when the caller actually set
+		// them. nil = "use server default" (single-match strict);
+		// non-nil = "the caller opted into something explicit".
+		if a.ReplaceAll {
+			b := true
+			req.ReplaceAll = &b
+		}
+		if a.ExpectedMatches > 0 {
+			n := a.ExpectedMatches
+			req.ExpectedMatches = &n
+		}
+		out, err := c.ReplaceInFile(ctx, a.SandboxURL, req)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -637,14 +828,62 @@ func fileSearch(c *Client) mcp.ToolHandlerFor[fileSearchArgs, any] {
 	}
 }
 
-func fileReplace(c *Client) mcp.ToolHandlerFor[fileReplaceArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileReplaceArgs) (*mcp.CallToolResult, any, error) {
+func fileMultiEdit(c *Client) mcp.ToolHandlerFor[fileMultiEditArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileMultiEditArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.File == "" {
 			return errResult("sandbox_url and file are required"), nil, nil
 		}
-		out, err := c.ReplaceInFile(ctx, a.SandboxURL, FileReplaceRequest{
-			File: a.File, OldStr: a.OldStr, NewStr: a.NewStr,
+		if len(a.Edits) == 0 {
+			return errResult("edits must contain at least one step"), nil, nil
+		}
+		steps := make([]FileEditStep, len(a.Edits))
+		for i, e := range a.Edits {
+			steps[i] = FileEditStep{OldStr: e.OldStr, NewStr: e.NewStr}
+			if e.ReplaceAll {
+				b := true
+				steps[i].ReplaceAll = &b
+			}
+			if e.ExpectedMatches > 0 {
+				n := e.ExpectedMatches
+				steps[i].ExpectedMatches = &n
+			}
+		}
+		out, err := c.MultiEditFile(ctx, a.SandboxURL, FileMultiEditRequest{
+			File:  a.File,
+			Edits: steps,
 		})
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		return jsonResult(out), out, nil
+	}
+}
+
+func fileGrep(c *Client) mcp.ToolHandlerFor[fileGrepArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a fileGrepArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
+		if a.SandboxURL == "" || a.Path == "" || a.Regex == "" {
+			return errResult("sandbox_url, path, and regex are required"), nil, nil
+		}
+		req := FileGrepRequest{Path: a.Path, Regex: a.Regex, Glob: a.Glob}
+		if a.MaxResults > 0 {
+			n := a.MaxResults
+			req.MaxResults = &n
+		}
+		if a.ContextBefore > 0 {
+			n := a.ContextBefore
+			req.ContextBefore = &n
+		}
+		if a.ContextAfter > 0 {
+			n := a.ContextAfter
+			req.ContextAfter = &n
+		}
+		out, err := c.GrepFiles(ctx, a.SandboxURL, req)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -654,6 +893,9 @@ func fileReplace(c *Client) mcp.ToolHandlerFor[fileReplaceArgs, any] {
 
 func portWait(c *Client) mcp.ToolHandlerFor[portWaitArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a portWaitArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Port == 0 {
 			return errResult("sandbox_url and port are required"), nil, nil
 		}
@@ -667,8 +909,32 @@ func portWait(c *Client) mcp.ToolHandlerFor[portWaitArgs, any] {
 	}
 }
 
+func projectCreate(c *Client) mcp.ToolHandlerFor[projectCreateArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectCreateArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
+		if a.SandboxURL == "" || a.Name == "" || a.Kind == "" {
+			return errResult("sandbox_url, name, and kind are required"), nil, nil
+		}
+		out, err := c.ProjectCreate(ctx, a.SandboxURL, ProjectCreateRequest{
+			Name:         a.Name,
+			Kind:         a.Kind,
+			StartCommand: a.StartCommand,
+			Port:         a.Port,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		return jsonResult(out), out, nil
+	}
+}
+
 func projectStart(c *Client) mcp.ToolHandlerFor[projectStartArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectStartArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Name == "" {
 			return errResult("sandbox_url and name are required"), nil, nil
 		}
@@ -690,6 +956,9 @@ func projectStart(c *Client) mcp.ToolHandlerFor[projectStartArgs, any] {
 
 func projectStop(c *Client) mcp.ToolHandlerFor[projectNameArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectNameArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Name == "" {
 			return errResult("sandbox_url and name are required"), nil, nil
 		}
@@ -701,21 +970,11 @@ func projectStop(c *Client) mcp.ToolHandlerFor[projectNameArgs, any] {
 	}
 }
 
-func projectStartAll(c *Client) mcp.ToolHandlerFor[sandboxURLOnlyArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxURLOnlyArgs) (*mcp.CallToolResult, any, error) {
-		if a.SandboxURL == "" {
-			return errResult("sandbox_url is required"), nil, nil
-		}
-		out, err := c.ProjectStartAll(ctx, a.SandboxURL)
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-		return jsonResult(out), out, nil
-	}
-}
-
 func projectList(c *Client) mcp.ToolHandlerFor[sandboxURLOnlyArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxURLOnlyArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" {
 			return errResult("sandbox_url is required"), nil, nil
 		}
@@ -729,6 +988,9 @@ func projectList(c *Client) mcp.ToolHandlerFor[sandboxURLOnlyArgs, any] {
 
 func projectLogs(c *Client) mcp.ToolHandlerFor[projectNameArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectNameArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Name == "" {
 			return errResult("sandbox_url and name are required"), nil, nil
 		}
@@ -754,6 +1016,9 @@ const maxInlineImages = 8
 // state continuity.
 func codeExec(c *Client) mcp.ToolHandlerFor[codeExecArgs, CodeExecResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a codeExecArgs) (*mcp.CallToolResult, CodeExecResult, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.Code == "" {
 			return errResult("sandbox_url and code are required"), CodeExecResult{}, nil
 		}
@@ -792,6 +1057,9 @@ func codeExec(c *Client) mcp.ToolHandlerFor[codeExecArgs, CodeExecResult] {
 
 func codeClose(c *Client) mcp.ToolHandlerFor[codeContextIDArgs, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a codeContextIDArgs) (*mcp.CallToolResult, any, error) {
+		if a.SandboxURL == "" {
+			a.SandboxURL = c.LastSandboxURL()
+		}
 		if a.SandboxURL == "" || a.ContextID == "" {
 			return errResult("sandbox_url and context_id are required"), nil, nil
 		}

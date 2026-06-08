@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,30 @@ type Client struct {
 	// error logs but does NOT fail the create — partial wiring is
 	// better than no sandbox at all.
 	PostCreateHook func(ctx context.Context, info SandboxInfo) error
+
+	// lastSandboxURL caches the URL of the most recently created
+	// sandbox in this MCP session. Every file/command/project/port
+	// /code tool's sandbox_url arg is optional and falls back to this
+	// value, so the LLM doesn't have to copy the URL into every
+	// single call. Set by sandboxCreate; consumed by resolveSandboxURL.
+	urlMu          sync.RWMutex
+	lastSandboxURL string
+}
+
+// SetLastSandboxURL caches the URL of the most recently created
+// sandbox so subsequent tool calls can omit sandbox_url. Concurrent
+// safe; the most recent caller wins.
+func (c *Client) SetLastSandboxURL(url string) {
+	c.urlMu.Lock()
+	c.lastSandboxURL = url
+	c.urlMu.Unlock()
+}
+
+// LastSandboxURL returns the cached URL, or "" if none.
+func (c *Client) LastSandboxURL() string {
+	c.urlMu.RLock()
+	defer c.urlMu.RUnlock()
+	return c.lastSandboxURL
 }
 
 // Config drives Client construction.
@@ -83,14 +108,26 @@ type SandboxBinding struct {
 }
 
 // SandboxCreateResult is what sandbox_create returns to the LLM. It
-// wraps SandboxInfo with the post-create bindings snapshot so the
-// model can see, on the very first tool response, which services are
-// already wired — and skip spinning up parallel in-process versions
-// (mongodb-memory-server, embedded sqlite, etc.) when the user has
-// staged a real binding.
+// wraps SandboxInfo with two post-create snapshots so the model can
+// see, on the very first tool response, exactly what's already wired:
+//
+//   - Bindings: cluster service binds (postgres, redis, …) with their
+//     env-var names. If a service is here, code reads the env vars
+//     verbatim; don't bind it again, don't spin up an in-process
+//     substitute (mongodb-memory-server, embedded sqlite, etc.).
+//
+//   - Env: NAMES of cluster-default env vars / secrets the operator
+//     staged via `agentry env set NAME` (no --sandbox). Values are
+//     NEVER returned — only names — but the env vars are already set
+//     inside the sandbox and the user's code can read them via
+//     process.env.NAME. When the user mentions a service (JIRA,
+//     Slack, Stripe, …) the LLM MUST check this list BEFORE deciding
+//     a token is missing; the operator may have staged it once at
+//     the cluster level and expect every sandbox to inherit it.
 type SandboxCreateResult struct {
 	SandboxInfo
 	Bindings []SandboxBinding `json:"bindings"`
+	Env      []string         `json:"env"`
 }
 
 // CreateRequest is the JSON body for POST /api/sandboxes. Only the fields
@@ -289,6 +326,10 @@ type FileReadRequest struct {
 	File      string `json:"file"`
 	StartLine int    `json:"start_line,omitempty"`
 	EndLine   int    `json:"end_line,omitempty"`
+	// Format: "" / "raw" returns plain content; "numbered" returns
+	// cat -n style line-numbered text. MCP tools default to numbered
+	// so the LLM can refer to lines verbatim.
+	Format string `json:"format,omitempty"`
 }
 
 // FileWriteRequest is the JSON body for POST /v1/file/write.
@@ -331,15 +372,41 @@ type FileFindRequest struct {
 	Glob string `json:"glob"`
 }
 
-type FileSearchRequest struct {
-	File  string `json:"file"`
-	Regex string `json:"regex"`
+// FileReplaceRequest is the JSON body for POST /v1/file/replace.
+// Strict by default: errors when OldStr matches more than once and
+// neither ReplaceAll nor a matching ExpectedMatches is set.
+type FileReplaceRequest struct {
+	File            string `json:"file"`
+	OldStr          string `json:"old_str"`
+	NewStr          string `json:"new_str"`
+	ExpectedMatches *int   `json:"expected_matches,omitempty"`
+	ReplaceAll      *bool  `json:"replace_all,omitempty"`
 }
 
-type FileReplaceRequest struct {
-	File   string `json:"file"`
-	OldStr string `json:"old_str"`
-	NewStr string `json:"new_str"`
+// FileMultiEditRequest is the JSON body for POST /v1/file/multi_edit.
+// Applies several edits to one file atomically: each edit operates on
+// the result of the previous; any failure rolls back the whole call.
+type FileMultiEditRequest struct {
+	File  string         `json:"file"`
+	Edits []FileEditStep `json:"edits"`
+}
+
+type FileEditStep struct {
+	OldStr          string `json:"old_str"`
+	NewStr          string `json:"new_str"`
+	ExpectedMatches *int   `json:"expected_matches,omitempty"`
+	ReplaceAll      *bool  `json:"replace_all,omitempty"`
+}
+
+// FileGrepRequest is the JSON body for POST /v1/file/grep. Multi-file
+// regex sweep with optional glob filter and context lines.
+type FileGrepRequest struct {
+	Path          string `json:"path"`
+	Regex         string `json:"regex"`
+	Glob          string `json:"glob,omitempty"`
+	MaxResults    *int   `json:"max_results,omitempty"`
+	ContextBefore *int   `json:"context_before,omitempty"`
+	ContextAfter  *int   `json:"context_after,omitempty"`
 }
 
 func (c *Client) FindFiles(ctx context.Context, sandboxURL string, req FileFindRequest) (map[string]any, error) {
@@ -348,15 +415,21 @@ func (c *Client) FindFiles(ctx context.Context, sandboxURL string, req FileFindR
 	return out, err
 }
 
-func (c *Client) SearchInFile(ctx context.Context, sandboxURL string, req FileSearchRequest) (map[string]any, error) {
+func (c *Client) GrepFiles(ctx context.Context, sandboxURL string, req FileGrepRequest) (map[string]any, error) {
 	var out map[string]any
-	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/file/search", req, &out)
+	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/file/grep", req, &out)
 	return out, err
 }
 
 func (c *Client) ReplaceInFile(ctx context.Context, sandboxURL string, req FileReplaceRequest) (map[string]any, error) {
 	var out map[string]any
 	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/file/replace", req, &out)
+	return out, err
+}
+
+func (c *Client) MultiEditFile(ctx context.Context, sandboxURL string, req FileMultiEditRequest) (map[string]any, error) {
+	var out map[string]any
+	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/file/multi_edit", req, &out)
 	return out, err
 }
 
@@ -418,6 +491,20 @@ type ProjectNameRequest struct {
 	Name string `json:"name"`
 }
 
+// ProjectCreateRequest is the JSON body for POST /v1/project/create.
+type ProjectCreateRequest struct {
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	StartCommand []string `json:"start_command,omitempty"`
+	Port         int      `json:"port,omitempty"`
+}
+
+func (c *Client) ProjectCreate(ctx context.Context, sandboxURL string, req ProjectCreateRequest) (map[string]any, error) {
+	var out map[string]any
+	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/project/create", req, &out)
+	return out, err
+}
+
 func (c *Client) ProjectStart(ctx context.Context, sandboxURL, name string) (map[string]any, error) {
 	var out map[string]any
 	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/project/start", ProjectNameRequest{Name: name}, &out)
@@ -445,15 +532,6 @@ func (c *Client) ProjectList(ctx context.Context, sandboxURL string) (map[string
 func (c *Client) ProjectLogs(ctx context.Context, sandboxURL, name string) (map[string]any, error) {
 	var out map[string]any
 	err := c.do(ctx, http.MethodGet, sandboxURL+"/v1/project/logs?name="+name, nil, &out)
-	return out, err
-}
-
-// ProjectStartAll starts every project under /workspace/projects/,
-// respecting each project's depends_on ordering. The right verb when
-// the user wants the whole workspace up in one call.
-func (c *Client) ProjectStartAll(ctx context.Context, sandboxURL string) (map[string]any, error) {
-	var out map[string]any
-	err := c.do(ctx, http.MethodPost, sandboxURL+"/v1/project/start-all", nil, &out)
 	return out, err
 }
 
