@@ -35,6 +35,12 @@ type FileReadRequest struct {
 	File      string `json:"file"`
 	StartLine *int   `json:"start_line,omitempty"`
 	EndLine   *int   `json:"end_line,omitempty"`
+	// Format controls how lines are rendered:
+	//   "" / "raw"      — plain content (default, back-compat)
+	//   "numbered"      — cat -n style ("    1\tfoo"). The default the
+	//                     MCP layer sets so the LLM can name lines
+	//                     without inventing anchors.
+	Format string `json:"format,omitempty"`
 }
 
 type FileWriteRequest struct {
@@ -56,6 +62,9 @@ type FileListRequest struct {
 	SortDesc           *bool   `json:"sort_desc,omitempty"`
 }
 
+// FileFindRequest globs by path-relative pattern (** + braces supported).
+// The matcher operates on the relative path from Path, not the basename,
+// so "**/*.py" finds Python files anywhere in the tree.
 type FileFindRequest struct {
 	Path string `json:"path"`
 	Glob string `json:"glob"`
@@ -66,15 +75,58 @@ type FileSearchRequest struct {
 	Regex string `json:"regex"`
 }
 
+// FileReplaceRequest replaces literal OldStr with NewStr. Default
+// semantics are strict: if OldStr appears more than once and neither
+// ExpectedMatches nor ReplaceAll is set, the call errors with the
+// actual count. Pass ReplaceAll:true for bulk renames; pass
+// ExpectedMatches to assert a specific occurrence count.
 type FileReplaceRequest struct {
-	File   string `json:"file"`
-	OldStr string `json:"old_str"`
-	NewStr string `json:"new_str"`
+	File            string `json:"file"`
+	OldStr          string `json:"old_str"`
+	NewStr          string `json:"new_str"`
+	ExpectedMatches *int   `json:"expected_matches,omitempty"`
+	ReplaceAll      *bool  `json:"replace_all,omitempty"`
+}
+
+// FileMultiEditRequest applies several edits to one file atomically.
+// Each edit operates on the result of the previous; if any fails, the
+// file is not written and the response details the failure.
+type FileMultiEditRequest struct {
+	File  string         `json:"file"`
+	Edits []FileEditStep `json:"edits"`
+}
+
+type FileEditStep struct {
+	OldStr          string `json:"old_str"`
+	NewStr          string `json:"new_str"`
+	ExpectedMatches *int   `json:"expected_matches,omitempty"`
+	ReplaceAll      *bool  `json:"replace_all,omitempty"`
+}
+
+// FileGrepRequest is multi-file regex search. Path is walked; each
+// text file (binaries skipped by null-byte sniff) is line-scanned and
+// matches are returned with optional context lines.
+type FileGrepRequest struct {
+	Path          string `json:"path"`
+	Regex         string `json:"regex"`
+	Glob          string `json:"glob,omitempty"`
+	MaxResults    *int   `json:"max_results,omitempty"`
+	ContextBefore *int   `json:"context_before,omitempty"`
+	ContextAfter  *int   `json:"context_after,omitempty"`
 }
 
 type FileReadData struct {
 	File    string `json:"file"`
 	Content string `json:"content"`
+	// TotalLines is the file's full line count, so the LLM can tell
+	// whether the slice it received covered the whole file.
+	TotalLines int `json:"total_lines"`
+	// StartLine / EndLine are the 1-based bounds actually returned
+	// (echoes back the request after clamping).
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
+	// Truncated is true when the response was capped (size limit hit).
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type FileWriteData struct {
@@ -88,6 +140,7 @@ type FileListData struct {
 	TotalCount     int        `json:"total_count"`
 	DirectoryCount int        `json:"directory_count"`
 	FileCount      int        `json:"file_count"`
+	Truncated      bool       `json:"truncated,omitempty"`
 }
 
 type FileInfo struct {
@@ -101,18 +154,51 @@ type FileInfo struct {
 }
 
 type FileFindData struct {
-	Path  string   `json:"path"`
-	Files []string `json:"files"`
+	Path      string   `json:"path"`
+	Files     []string `json:"files"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
+// FileSearchData and FileGrepData both use FileGrepMatch so a single
+// shape covers single-file (search) and multi-file (grep) results.
 type FileSearchData struct {
-	File        string   `json:"file"`
-	Matches     []string `json:"matches"`
-	LineNumbers []int    `json:"line_numbers"`
+	File    string           `json:"file"`
+	Matches []FileGrepMatch  `json:"matches"`
+	// LineNumbers retained for backward compatibility with existing
+	// callers that pulled the parallel arrays out of the response.
+	// Will be removed once internal callers migrate.
+	LineNumbers []int `json:"line_numbers,omitempty"`
 }
 
+type FileGrepData struct {
+	Path       string          `json:"path"`
+	Matches    []FileGrepMatch `json:"matches"`
+	TotalFound int             `json:"total_found"`
+	Truncated  bool            `json:"truncated,omitempty"`
+}
+
+type FileGrepMatch struct {
+	File          string   `json:"file"`
+	Line          int      `json:"line"`
+	Text          string   `json:"text"`
+	ContextBefore []string `json:"context_before,omitempty"`
+	ContextAfter  []string `json:"context_after,omitempty"`
+}
+
+// FileReplaceData reports what changed plus the new total occurrence
+// count of OldStr so the LLM can confirm intent.
 type FileReplaceData struct {
 	File          string `json:"file"`
+	ReplacedCount int    `json:"replaced_count"`
+}
+
+type FileMultiEditData struct {
+	File  string             `json:"file"`
+	Steps []FileEditStepResult `json:"steps"`
+}
+
+type FileEditStepResult struct {
+	OldStr        string `json:"old_str"`
 	ReplacedCount int    `json:"replaced_count"`
 }
 
@@ -143,11 +229,28 @@ type PortWaitRequest struct {
 	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
 }
 
+// PortsListData is the response shape for GET /v1/ports. Splits ports
+// the project manager OWNS from "unmanaged" listeners — anything bound
+// by a bare command_run / command_start. The unmanaged list is the
+// signal the LLM sees the moment it falls off the project pattern:
+// surfacing the anomaly in the response is faster than waiting for the
+// user to redirect.
+type PortsListData struct {
+	Ports              []PortInfo `json:"ports"`
+	UnmanagedListeners []PortInfo `json:"unmanaged_listeners,omitempty"`
+}
+
 type PortInfo struct {
 	Port        int    `json:"port"`
 	PID         int    `json:"pid,omitempty"`
 	ProcessName string `json:"process_name,omitempty"`
 	State       string `json:"state"`
+	// Managed is true when this listener belongs to a registered
+	// project's process group. False/absent means the process was
+	// started with command_run / command_start and isn't covered by
+	// the project manager — that's the LLM's cue to wire it into a
+	// project.
+	Managed bool `json:"managed,omitempty"`
 	// Address is the literal bind host from the LISTEN socket
 	// ("0.0.0.0", "127.0.0.1", "::", "::1", or a specific interface
 	// IP). Used by the dashboard to distinguish ports that can be
@@ -206,9 +309,33 @@ type ProjectStopRequest struct {
 	Name string `json:"name"`
 }
 
+// ProjectCreateRequest is POST /v1/project/create. The handler
+// scaffolds `.sandbox-project.json` (and a minimal starter file for
+// the kind) so the LLM can't be tempted to skip the project pattern
+// and tell the user to run a server by hand.
+//
+// Kinds:
+//
+//	"nextjs"        — Next.js App Router; start_command "npm run dev"
+//	"static-html"   — vanilla HTML/CSS/JS; "python3 -m http.server $PORT" inside the project dir
+//	"streamlit"     — Python data app; "streamlit run app.py --server.port $PORT"
+//	"fastapi"       — Python API; "uvicorn app:app --host 0.0.0.0 --port $PORT"
+//	"python-script" — long-running Python process; "python3 main.py"
+//	"custom"        — bring your own; StartCommand is required
 type ProjectCreateRequest struct {
-	Name     string `json:"name"`
-	Template string `json:"template,omitempty"` // "python-fastapi", "node-express", etc.
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	StartCommand []string `json:"start_command,omitempty"`
+	Port         int      `json:"port,omitempty"`
+}
+
+type ProjectCreateData struct {
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	Path         string   `json:"path"`
+	StartCommand []string `json:"start_command"`
+	NextStep     string   `json:"next_step"`
+	FilesWritten []string `json:"files_written"`
 }
 
 type ProjectStatus struct {

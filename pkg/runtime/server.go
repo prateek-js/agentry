@@ -183,7 +183,9 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	mux.HandleFunc("POST /v1/file/list", handlers.FileListHandler)
 	mux.HandleFunc("POST /v1/file/find", handlers.FileFindHandler)
 	mux.HandleFunc("POST /v1/file/search", handlers.FileSearchHandler)
+	mux.HandleFunc("POST /v1/file/grep", handlers.FileGrepHandler)
 	mux.HandleFunc("POST /v1/file/replace", handlers.FileReplaceHandler)
+	mux.HandleFunc("POST /v1/file/multi_edit", handlers.FileMultiEditHandler)
 	// Streaming endpoints: Range-aware download + multipart upload.
 	mux.HandleFunc("GET /v1/file/download", handlers.FileDownloadHandler)
 	mux.HandleFunc("POST /v1/file/upload", handlers.FileUploadHandler)
@@ -193,7 +195,7 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	mux.HandleFunc("POST /v1/process/stop", handlers.ProcessStopHandler)
 
 	// Ports
-	mux.HandleFunc("GET /v1/ports", handlers.PortsListHandler)
+	mux.HandleFunc("GET /v1/ports", handlers.PortsListHandler(projectMgr))
 	mux.HandleFunc("POST /v1/ports/wait", handlers.PortWaitHandler)
 
 	// User-app reverse proxy. Browser traffic from a *.agentry.live
@@ -207,6 +209,7 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	// (see connectInterceptor) — anything that speaks TCP can ride it.
 
 	// Project manager
+	mux.HandleFunc("POST /v1/project/create", handlers.ProjectCreateHandler(projectMgr))
 	mux.HandleFunc("POST /v1/project/start", handlers.ProjectStartHandler(projectMgr))
 	mux.HandleFunc("POST /v1/project/stop", handlers.ProjectStopHandler(projectMgr))
 	mux.HandleFunc("POST /v1/project/restart", handlers.ProjectRestartHandler(projectMgr))

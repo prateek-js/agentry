@@ -80,12 +80,12 @@ LISTEN   0      128      [::]:8080               [::]:*             users:(("ad-
 LISTEN   0      128      [::1]:9000              [::]:*             users:(("internal-tool",pid=200,fd=9))
 `
 	got := parsePortListing(raw)
-	want := []models.PortInfo{
-		{Port: 3000, State: "LISTEN", Address: "0.0.0.0", Loopback: false},
-		{Port: 34521, State: "LISTEN", Address: "127.0.0.1", Loopback: true},
-		{Port: 44779, State: "LISTEN", Address: "127.0.0.1", Loopback: true},
-		{Port: 8080, State: "LISTEN", Address: "::", Loopback: false},
-		{Port: 9000, State: "LISTEN", Address: "::1", Loopback: true},
+	want := []portInfoWithPIDs{
+		{PortInfo: models.PortInfo{Port: 3000, State: "LISTEN", Address: "0.0.0.0", Loopback: false}, pids: []int{42}},
+		{PortInfo: models.PortInfo{Port: 34521, State: "LISTEN", Address: "127.0.0.1", Loopback: true}, pids: []int{100}},
+		{PortInfo: models.PortInfo{Port: 44779, State: "LISTEN", Address: "127.0.0.1", Loopback: true}, pids: []int{100}},
+		{PortInfo: models.PortInfo{Port: 8080, State: "LISTEN", Address: "::", Loopback: false}, pids: []int{1}},
+		{PortInfo: models.PortInfo{Port: 9000, State: "LISTEN", Address: "::1", Loopback: true}, pids: []int{200}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsePortListing mismatch\n got  = %#v\n want = %#v", got, want)
@@ -103,9 +103,13 @@ tcp        0      0 0.0.0.0:3000            0.0.0.0:*               LISTEN      
 tcp        0      0 127.0.0.1:34521         0.0.0.0:*               LISTEN      100/python3.11
 `
 	got := parsePortListing(raw)
-	want := []models.PortInfo{
-		{Port: 3000, State: "LISTEN", Address: "0.0.0.0", Loopback: false},
-		{Port: 34521, State: "LISTEN", Address: "127.0.0.1", Loopback: true},
+	// netstat output doesn't include the users:(...) block, so pids
+	// stay nil — the handler treats every listener as unmanaged in
+	// that fallback. This is OK: the LLM signal degrades to "I can't
+	// tell what owns this", which is safer than a false-positive.
+	want := []portInfoWithPIDs{
+		{PortInfo: models.PortInfo{Port: 3000, State: "LISTEN", Address: "0.0.0.0", Loopback: false}},
+		{PortInfo: models.PortInfo{Port: 34521, State: "LISTEN", Address: "127.0.0.1", Loopback: true}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("netstat parse mismatch\n got  = %#v\n want = %#v", got, want)

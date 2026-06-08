@@ -624,6 +624,305 @@ func ProjectListHandler(pm *ProjectManager) http.HandlerFunc {
 	}
 }
 
+// projectCreateScaffold is the materialised template for one kind.
+// Keeping the manifest + stub files together as a flat tuple makes the
+// switch below readable without sprouting per-kind helper funcs.
+type projectCreateScaffold struct {
+	config models.ProjectConfig
+	files  map[string]string // relpath under projectDir → content
+}
+
+// buildProjectScaffold returns the manifest and starter files for one
+// of the supported kinds. The starter files exist for two reasons:
+//  1. `project_start` would fail on an empty dir for stacks that need
+//     a specific entrypoint (streamlit run app.py, etc.).
+//  2. Giving the LLM a known path to edit ("public/index.html") is
+//     less brittle than "write whatever HTML you want somewhere."
+//
+// The LLM is expected to overwrite the stub immediately after create.
+func buildProjectScaffold(name, kind string, customStart []string, port int) (projectCreateScaffold, error) {
+	switch kind {
+	case "nextjs":
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name:         name,
+				Type:         "app",
+				StartCommand: []string{"npm", "run", "dev"},
+				AutoRestart:  true,
+			},
+			// No stub: app.md drives the actual Next.js scaffold via
+			// `npx create-next-app` and then file_write fills it in.
+			// project_start only works after that scaffold lands.
+			files: nil,
+		}, nil
+
+	case "static-html":
+		p := port
+		if p == 0 {
+			p = 8000
+		}
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name:         name,
+				Type:         "app",
+				StartCommand: []string{"python3", "-m", "http.server", fmt.Sprintf("%d", p)},
+				AutoRestart:  true,
+			},
+			files: map[string]string{
+				"index.html": staticHTMLStub(name),
+			},
+		}, nil
+
+	case "streamlit":
+		p := port
+		if p == 0 {
+			p = 8501
+		}
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name: name,
+				Type: "app",
+				StartCommand: []string{"streamlit", "run", "app.py",
+					"--server.port", fmt.Sprintf("%d", p),
+					"--server.address", "0.0.0.0",
+					"--server.headless", "true",
+				},
+				AutoRestart: true,
+			},
+			files: map[string]string{
+				"app.py":           streamlitStub(name),
+				"requirements.txt": "streamlit\n",
+				// Procfile is read by railpack at deploy time to
+				// pick the production CMD. $PORT is set by the
+				// container runtime — sandbox dev uses port 8501,
+				// production uses agentry's deploy port. Same code,
+				// different runtimes.
+				"Procfile": "web: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true\n",
+			},
+		}, nil
+
+	case "fastapi":
+		p := port
+		if p == 0 {
+			p = 8000
+		}
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name: name,
+				Type: "app",
+				StartCommand: []string{"uvicorn", "app:app",
+					"--host", "0.0.0.0",
+					"--port", fmt.Sprintf("%d", p),
+					"--reload",
+				},
+				AutoRestart: true,
+			},
+			files: map[string]string{
+				"app.py":           fastapiStub(name),
+				"requirements.txt": "fastapi\nuvicorn[standard]\n",
+				// Procfile drives production deploy via railpack.
+				// No --reload for production; binds whatever PORT
+				// the container runtime sets.
+				"Procfile": "web: uvicorn app:app --host 0.0.0.0 --port $PORT\n",
+			},
+		}, nil
+
+	case "python-script":
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name:         name,
+				Type:         "service",
+				StartCommand: []string{"python3", "main.py"},
+				AutoRestart:  true,
+			},
+			files: map[string]string{
+				"main.py": pythonScriptStub(name),
+			},
+		}, nil
+
+	case "custom":
+		if len(customStart) == 0 {
+			return projectCreateScaffold{}, fmt.Errorf("custom kind requires start_command")
+		}
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name:         name,
+				Type:         "service",
+				StartCommand: customStart,
+				AutoRestart:  true,
+			},
+			files: nil,
+		}, nil
+
+	default:
+		return projectCreateScaffold{}, fmt.Errorf("unknown kind %q — supported: nextjs, static-html, streamlit, fastapi, python-script, custom", kind)
+	}
+}
+
+func staticHTMLStub(name string) string {
+	return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>` + name + `</title>
+    <style>
+      /* placeholder — replace with content from skills/frontend-design + a theme */
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 4rem; color: #111; }
+    </style>
+  </head>
+  <body>
+    <h1>` + name + `</h1>
+    <p>Stub from project_create. Before editing, read /etc/sandbox/docs/skills/frontend-design/SKILL.md and pick a theme.</p>
+  </body>
+</html>
+`
+}
+
+func streamlitStub(name string) string {
+	return `import streamlit as st
+
+st.set_page_config(page_title="` + name + `", layout="wide")
+st.title("` + name + `")
+st.caption("Stub from project_create — replace with real content.")
+`
+}
+
+func fastapiStub(name string) string {
+	return `from fastapi import FastAPI
+
+app = FastAPI(title="` + name + `")
+
+
+@app.get("/")
+def root():
+    return {"app": "` + name + `", "status": "stub from project_create"}
+`
+}
+
+func pythonScriptStub(name string) string {
+	return `import time
+
+print("[` + name + `] starting (stub from project_create)", flush=True)
+while True:
+    time.sleep(60)
+`
+}
+
+// CreateProject materialises a project scaffold under workDir/projects/<name>.
+// Returns the manifest path + the list of files written so the handler
+// can echo them. Returns an error if the project dir already has a
+// manifest — overwriting would silently clobber the LLM's prior work.
+func (pm *ProjectManager) CreateProject(req models.ProjectCreateRequest) (models.ProjectCreateData, error) {
+	if req.Name == "" {
+		return models.ProjectCreateData{}, fmt.Errorf("name is required")
+	}
+	if strings.ContainsAny(req.Name, "/\\") || req.Name == "." || req.Name == ".." {
+		return models.ProjectCreateData{}, fmt.Errorf("name must be a single path segment")
+	}
+	if req.Kind == "" {
+		return models.ProjectCreateData{}, fmt.Errorf("kind is required (nextjs, static-html, streamlit, fastapi, python-script, custom)")
+	}
+
+	scaffold, err := buildProjectScaffold(req.Name, req.Kind, req.StartCommand, req.Port)
+	if err != nil {
+		return models.ProjectCreateData{}, err
+	}
+
+	projectDir := filepath.Join(pm.workDir, "projects", req.Name)
+	configPath := filepath.Join(projectDir, projectConfigFile)
+
+	if _, err := os.Stat(configPath); err == nil {
+		return models.ProjectCreateData{}, fmt.Errorf("project '%s' already exists at %s — pick a different name or delete the existing manifest first", req.Name, projectDir)
+	}
+
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return models.ProjectCreateData{}, fmt.Errorf("cannot create project dir: %w", err)
+	}
+
+	manifest, err := json.MarshalIndent(scaffold.config, "", "  ")
+	if err != nil {
+		return models.ProjectCreateData{}, err
+	}
+	if err := os.WriteFile(configPath, append(manifest, '\n'), 0o644); err != nil {
+		return models.ProjectCreateData{}, err
+	}
+
+	written := []string{configPath}
+	for rel, content := range scaffold.files {
+		full := filepath.Join(projectDir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return models.ProjectCreateData{}, err
+		}
+		// Don't clobber files that already exist — the LLM may have
+		// pre-populated the dir with file_write before reaching this
+		// tool. Silent skip; the manifest is still definitive.
+		if _, err := os.Stat(full); err == nil {
+			continue
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			return models.ProjectCreateData{}, err
+		}
+		written = append(written, full)
+	}
+
+	nextStep := fmt.Sprintf("Project created. Next: edit files under %s as needed (start with content, NOT styling — read skills/frontend-design/SKILL.md before any CSS), then call project_start with name=%q.", projectDir, req.Name)
+	return models.ProjectCreateData{
+		Name:         scaffold.config.Name,
+		Kind:         req.Kind,
+		Path:         projectDir,
+		StartCommand: scaffold.config.StartCommand,
+		NextStep:     nextStep,
+		FilesWritten: written,
+	}, nil
+}
+
+// RunningPGIDs returns the set of process-group ids for every project
+// currently in "running" state. PortsListHandler uses this to classify
+// each LISTEN socket as managed (in a project's pgid) or unmanaged.
+func (pm *ProjectManager) RunningPGIDs() map[int]struct{} {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	out := make(map[int]struct{}, len(pm.projects))
+	for _, proj := range pm.projects {
+		proj.mu.Lock()
+		if proj.status == "running" && proj.pid > 0 {
+			// The project's pgid is its own pid because StartProject
+			// always sets Setpgid:true with no parent pgid override
+			// (see exec.SysProcAttr in startProject), so the leader
+			// itself owns the new process group.
+			out[proj.pid] = struct{}{}
+		}
+		proj.mu.Unlock()
+	}
+	return out
+}
+
+// ProjectCreateHandler scaffolds a project's manifest + starter files.
+func ProjectCreateHandler(pm *ProjectManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req models.ProjectCreateRequest
+		if err := DecodeJSON(r, &req); err != nil {
+			Error(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		data, err := pm.CreateProject(req)
+		if err != nil {
+			// Bad input vs server error: name/kind/conflict are 400.
+			if strings.Contains(err.Error(), "required") ||
+				strings.Contains(err.Error(), "already exists") ||
+				strings.Contains(err.Error(), "must be a single") ||
+				strings.Contains(err.Error(), "unknown kind") {
+				Error(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			Error(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		Success(w, "project created", data)
+	}
+}
+
 // ProjectLogsHandler returns project logs.
 func ProjectLogsHandler(pm *ProjectManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
