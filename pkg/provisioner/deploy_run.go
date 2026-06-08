@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
+	dockerclient "github.com/docker/docker/client"
 )
 
 // Deploy run + proxy endpoints — the cluster target's runtime side.
@@ -79,6 +81,27 @@ const (
 	deploymentContainerPrefix = "deployment-"
 	deploymentPortLabel       = "agentry.deployment.port"
 	deploymentIDLabel         = "agentry.deployment.id"
+
+	// AgentryDeployPort is the convention port every deployed app must
+	// listen on. We inject PORT=<this> into the container env; railpack-
+	// built images and our scaffolds honor it (Procfile uses $PORT,
+	// railpack's Caddy/Node/Python templates respect $PORT). The bridge
+	// dials this port unconditionally.
+	//
+	// Picked because it's outside the runtime API (8080) AND outside
+	// the IANA reserved range, with no widely-used framework default
+	// it conflicts with at the deployment boundary. Numeric value isn't
+	// load-bearing; the convention is. Keep this in sync with the
+	// constant of the same name in agentry-app's deployments API
+	// (the request mints `Port: AgentryDeployPort` server-side).
+	AgentryDeployPort = 3000
+
+	// deployStartTimeout is how long the provisioner waits for the
+	// deployed app to bind AgentryDeployPort before declaring the
+	// deploy failed and reaping the container. 60s is enough for
+	// every common cold-start: Node module load, Python import +
+	// uvicorn boot, Streamlit's slow CLI parse.
+	deployStartTimeout = 60 * time.Second
 )
 
 func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request) {
@@ -87,10 +110,15 @@ func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "bad body: "+err.Error())
 		return
 	}
-	if req.ID == "" || req.ImageRef == "" || req.Port < 1 || req.Port > 65535 {
-		writeError(w, http.StatusBadRequest, "id, image_ref, valid port required")
+	if req.ID == "" || req.ImageRef == "" {
+		writeError(w, http.StatusBadRequest, "id and image_ref required")
 		return
 	}
+	// req.Port is accepted for back-compat but ignored — every
+	// agentry deployment listens on AgentryDeployPort by convention.
+	// The control plane mints Port=AgentryDeployPort on new deploys
+	// already, but older callers may still send other values.
+	req.Port = AgentryDeployPort
 
 	dockerCli, err := p.docker()
 	if err != nil {
@@ -124,8 +152,19 @@ func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request
 	// the previous container for the new one. Idempotent.
 	_ = dockerCli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 
-	envList := make([]string, 0, len(req.Env))
+	// PORT is the convention every deployed app honors. We seed it
+	// FIRST so user-supplied env can override (rarely a good idea but
+	// supported for `kind: custom` images that want a different port —
+	// they'd also need to fail the healthgate or change AgentryDeployPort
+	// in the request, which we no longer accept, so really: don't).
+	envList := make([]string, 0, len(req.Env)+1)
+	envList = append(envList, "PORT="+strconv.Itoa(AgentryDeployPort))
 	for k, v := range req.Env {
+		if k == "PORT" {
+			// Surface the override in logs — useful when debugging a
+			// healthgate failure that's actually a misconfigured env.
+			log.Printf("deploy-run: id=%s WARNING user overrode PORT=%s; healthgate still checks %d", req.ID, v, AgentryDeployPort)
+		}
 		envList = append(envList, k+"="+v)
 	}
 
@@ -152,12 +191,77 @@ func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Healthgate: the app must bind AgentryDeployPort within
+	// deployStartTimeout. Without this the bridge would happily
+	// register a deployment whose container is exit-1ing in a loop —
+	// the failure surfaces hours later as "connection refused" with no
+	// clue why. Polling a TCP connect is the cheapest reliable signal.
+	if waitErr := waitForDeploymentPort(ctx, dockerCli, created.ID, AgentryDeployPort, deployStartTimeout); waitErr != nil {
+		// Reap so we don't leave a broken container running + retrying.
+		// The user gets a clear error; they redeploy after fixing.
+		_ = dockerCli.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
+		log.Printf("deploy-run: id=%s healthgate failed: %v", req.ID, waitErr)
+		writeError(w, http.StatusBadGateway,
+			fmt.Sprintf("deployment didn't bind PORT=%d within %s: %v.\n\nagentry deployments must read PORT from env and listen on it. railpack's templates do this automatically; for kind=custom images, your CMD must honor $PORT.",
+				AgentryDeployPort, deployStartTimeout, waitErr))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, DeploymentRunResponse{
 		ID:        req.ID,
 		Container: containerName,
 		Port:      req.Port,
 		Status:    "running",
 	})
+}
+
+// waitForDeploymentPort polls a TCP connect to the container's bridge
+// IP:port until success or deadline. Inspect first to learn the IP
+// (we can't probe by container name on the default bridge network —
+// only user-defined networks resolve names). 200 ms poll keeps the
+// median deploy fast (~200-400 ms after the container is up) while
+// not flooding the daemon.
+func waitForDeploymentPort(ctx context.Context, dockerCli *dockerclient.Client, containerID string, port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	// Inspect once to get the container's IP. The IP doesn't change
+	// during a single run, so cache it after the first successful
+	// inspect rather than re-resolve every iteration.
+	var ip string
+	for time.Now().Before(deadline) {
+		if ip == "" {
+			info, err := dockerCli.ContainerInspect(ctx, containerID)
+			if err == nil && info.NetworkSettings != nil {
+				ip = info.NetworkSettings.IPAddress
+				// Fall back to bridge network entry if the default
+				// shape was empty (newer daemons sometimes only
+				// populate Networks[bridge].IPAddress).
+				if ip == "" {
+					if n, ok := info.NetworkSettings.Networks["bridge"]; ok && n != nil {
+						ip = n.IPAddress
+					}
+				}
+				// Also bail if the container has already exited —
+				// no point polling for a port a dead process won't
+				// bind.
+				if info.State != nil && info.State.Status == "exited" {
+					return fmt.Errorf("container exited (code %d)", info.State.ExitCode)
+				}
+			}
+		}
+		if ip != "" {
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), 300*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("timeout: no listener on %s:%d (last container_ip=%q)", "container", port, ip)
 }
 
 func (p *Provisioner) handleDeploymentGet(w http.ResponseWriter, r *http.Request) {

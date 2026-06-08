@@ -304,10 +304,35 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Step 1: tar the project inside the sandbox.
+	//
+	// Exclusions matter for railpack detection accuracy:
+	//   - .sandbox-project.json is our dev-mode manifest. Its
+	//     start_command mentions tools like `python3 -m http.server`
+	//     (a dev-only server); railpack heuristics that read non-
+	//     standard JSON in the build context can be confused into
+	//     picking the wrong template. The manifest has no production
+	//     meaning anyway.
+	//   - node_modules / .next / __pycache__ / .streamlit / .pyc are
+	//     either reproducible from lockfiles (railpack installs fresh
+	//     during build) or local-machine garbage. Including them
+	//     bloats the build context — easily multi-GB on Next.js apps
+	//     — and risks shipping local-state into the image.
 	tarPathSandbox := fmt.Sprintf("/tmp/build-ctx-%s.tar.gz", req.ImageTag)
+	excludeFlags := strings.Join([]string{
+		"--exclude='.sandbox-project.json'",
+		"--exclude='node_modules'",
+		"--exclude='.next'",
+		"--exclude='__pycache__'",
+		"--exclude='*.pyc'",
+		"--exclude='.streamlit/cache'",
+		"--exclude='.venv'",
+		"--exclude='dist'",
+		"--exclude='build'",
+		"--exclude='.git'",
+	}, " ")
 	if _, err := p.runtimeShellExec(ctx, sandboxID,
-		fmt.Sprintf("rm -f %s && tar czf %s -C %s . 2>&1",
-			tarPathSandbox, tarPathSandbox, projectPath)); err != nil {
+		fmt.Sprintf("rm -f %s && tar %s -czf %s -C %s . 2>&1",
+			tarPathSandbox, excludeFlags, tarPathSandbox, projectPath)); err != nil {
 		log.Printf("deploy-build: sandbox=%s FAILED at tar: %v", sandboxID, err)
 		writeError(w, http.StatusBadGateway, "tar build context: "+err.Error())
 		return
