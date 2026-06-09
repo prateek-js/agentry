@@ -59,7 +59,6 @@ DAILY USE
   agentry sandbox rm <id>                  delete a sandbox
 
   agentry pull [<sandbox>]                 download the sandbox to ./<sandbox>/
-  agentry forward [<sandbox>:]<port>       expose a sandbox port on localhost
   agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
 
@@ -130,8 +129,6 @@ func dispatch(args []string) int {
 		// stdio is the legacy name kept as an alias so existing
 		// Claude Desktop / Roo configs keep working.
 		return cmdMCP(args[1:])
-	case "forward":
-		return cmdForward(args[1:])
 	case "env":
 		return cmdEnv(args[1:])
 	case "pull":

@@ -14,7 +14,7 @@ func TestUsage_HasAllCurrentCommands(t *testing.T) {
 		// onboarding
 		"login", "init", "logout",
 		// daily
-		"sandbox", "pull", "forward", "env",
+		"sandbox", "pull", "env",
 		// editor integration
 		"mcp",
 		// admin

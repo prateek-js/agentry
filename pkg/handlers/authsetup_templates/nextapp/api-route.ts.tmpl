@@ -1,7 +1,0 @@
-// Catch-all auth API route. Better-Auth handles every /api/auth/*
-// path (sign-in, sign-up, sign-out, sessions, etc) through this one
-// handler — do not add sibling routes under /api/auth/.
-import { auth } from "@/lib/auth"
-import { toNextJsHandler } from "better-auth/next-js"
-
-export const { GET, POST } = toNextJsHandler(auth.handler)
