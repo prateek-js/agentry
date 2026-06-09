@@ -62,6 +62,14 @@ DAILY USE
   agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
 
+MULTI-ENV (profiles — one cluster, many configurations)
+  agentry profile                          print the active profile
+  agentry profile list                     table of every profile on this laptop
+  agentry profile use <name>               switch the active profile
+  agentry profile create <name>            create an empty profile
+  agentry profile show [--profile <name>]  list envs + binds under a profile
+  agentry profile copy <src> <dst>         clone one profile into another
+
 EDITOR INTEGRATION
   agentry mcp                              MCP server on stdin/stdout
                                            (alias: agentry stdio)
@@ -131,6 +139,8 @@ func dispatch(args []string) int {
 		return cmdMCP(args[1:])
 	case "env":
 		return cmdEnv(args[1:])
+	case "profile":
+		return cmdProfile(args[1:])
 	case "pull":
 		return cmdPull(args[1:])
 	case "share":
@@ -267,8 +277,8 @@ func cmdMCP(_ []string) int {
 		// fresh sandbox always gets the binds + envs matching the
 		// cluster the request was routed to.
 		PostCreateHook: chainHooks(
-			applyClusterDefaults(clusterRef.Get, tunneledHTTP),
-			applyClusterEnvDefaults(clusterRef.Get, tunneledHTTP),
+			applyClusterDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
+			applyClusterEnvDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
 		),
 	})
 

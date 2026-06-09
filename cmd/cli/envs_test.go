@@ -38,10 +38,10 @@ func pinAgentryConfig(t *testing.T) string {
 
 func TestSaveLoadEnv_RoundTrip(t *testing.T) {
 	pinAgentryConfig(t)
-	if err := saveEnv("test", &StoredEnv{Name: "JIRA_TOKEN", Value: "atlassian-xyz"}); err != nil {
+	if err := saveEnv("test", defaultProfile, &StoredEnv{Name: "JIRA_TOKEN", Value: "atlassian-xyz"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loadEnv("test", "JIRA_TOKEN")
+	got, err := loadEnv("test", defaultProfile, "JIRA_TOKEN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestSaveLoadEnv_RoundTrip(t *testing.T) {
 
 func TestLoadEnv_Missing_ReturnsNil(t *testing.T) {
 	pinAgentryConfig(t)
-	got, err := loadEnv("test", "NEVER_SAVED")
+	got, err := loadEnv("test", defaultProfile, "NEVER_SAVED")
 	if err != nil {
 		t.Fatalf("missing file should not error: %v", err)
 	}
@@ -68,13 +68,13 @@ func TestSaveEnv_RejectsInvalidName(t *testing.T) {
 	pinAgentryConfig(t)
 	bads := []string{"", "lowercase", "0LEADING_DIGIT", "WITH.DOT", "WITH-DASH"}
 	for _, name := range bads {
-		err := saveEnv("test", &StoredEnv{Name: name, Value: "x"})
+		err := saveEnv("test", defaultProfile, &StoredEnv{Name: name, Value: "x"})
 		if err == nil {
 			t.Errorf("saveEnv(%q) should have failed validation", name)
 		}
 	}
 	for _, name := range []string{"JIRA_TOKEN", "ABC", "X_1", "_PREFIXED", "X123"} {
-		if err := saveEnv("test", &StoredEnv{Name: name, Value: "x"}); err != nil {
+		if err := saveEnv("test", defaultProfile, &StoredEnv{Name: name, Value: "x"}); err != nil {
 			t.Errorf("saveEnv(%q) unexpectedly failed: %v", name, err)
 		}
 	}
@@ -82,10 +82,10 @@ func TestSaveEnv_RejectsInvalidName(t *testing.T) {
 
 func TestSaveEnv_FilePerms(t *testing.T) {
 	pinAgentryConfig(t)
-	if err := saveEnv("test", &StoredEnv{Name: "T", Value: "v"}); err != nil {
+	if err := saveEnv("test", defaultProfile, &StoredEnv{Name: "T", Value: "v"}); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(envFilePath("test", "T"))
+	info, err := os.Stat(envFilePath("test", defaultProfile, "T"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,16 +96,16 @@ func TestSaveEnv_FilePerms(t *testing.T) {
 
 func TestDeleteEnv_IdempotentOnMissing(t *testing.T) {
 	pinAgentryConfig(t)
-	if err := deleteEnv("test", "NEVER_SAVED"); err != nil {
+	if err := deleteEnv("test", defaultProfile, "NEVER_SAVED"); err != nil {
 		t.Errorf("delete on missing file should be a no-op: %v", err)
 	}
-	if err := saveEnv("test", &StoredEnv{Name: "X", Value: "v"}); err != nil {
+	if err := saveEnv("test", defaultProfile, &StoredEnv{Name: "X", Value: "v"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deleteEnv("test", "X"); err != nil {
+	if err := deleteEnv("test", defaultProfile, "X"); err != nil {
 		t.Fatalf("delete after save: %v", err)
 	}
-	if _, err := os.Stat(envFilePath("test", "X")); !os.IsNotExist(err) {
+	if _, err := os.Stat(envFilePath("test", defaultProfile, "X")); !os.IsNotExist(err) {
 		t.Errorf("file still exists after delete: %v", err)
 	}
 }
@@ -113,11 +113,11 @@ func TestDeleteEnv_IdempotentOnMissing(t *testing.T) {
 func TestListEnvs_SortsByName(t *testing.T) {
 	pinAgentryConfig(t)
 	for _, name := range []string{"ZULU", "ALPHA", "MIKE"} {
-		if err := saveEnv("test", &StoredEnv{Name: name, Value: "v"}); err != nil {
+		if err := saveEnv("test", defaultProfile, &StoredEnv{Name: name, Value: "v"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := listEnvs("test")
+	got, err := listEnvs("test", defaultProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +133,8 @@ func TestListEnvs_SortsByName(t *testing.T) {
 
 func TestListEnvs_EmptyClusterDir_ReturnsNoError(t *testing.T) {
 	pinAgentryConfig(t)
-	// Don't save anything — the envs/<cluster>/ dir doesn't exist.
-	got, err := listEnvs("test")
+	// Don't save anything — the envs/<cluster>/<profile>/ dir doesn't exist.
+	got, err := listEnvs("test", defaultProfile)
 	if err != nil {
 		t.Fatalf("listing empty cluster should not error: %v", err)
 	}
@@ -143,10 +143,20 @@ func TestListEnvs_EmptyClusterDir_ReturnsNoError(t *testing.T) {
 	}
 }
 
+// constCtx is a getCtx helper that returns the same (cluster, profile)
+// every call. Mirrors the production clusterAndProfile() shape so
+// tests can assert without dragging config-file plumbing through each
+// case.
+func constCtx(cluster, profile string) func() (string, string) {
+	return func() (string, string) { return cluster, profile }
+}
+
 // TestApplyClusterEnvDefaults_PostsEachSavedEnv exercises the hook
 // end-to-end: stage a few envs on disk, call the hook against a fake
 // provisioner, and confirm every saved env hit
-// /api/sandboxes/{id}/secrets with the right body.
+// /api/sandboxes/{id}/secrets with the right body. The hook also
+// auto-stamps AGENTRY_PROFILE on every sandbox, so we assert that
+// third POST too.
 func TestApplyClusterEnvDefaults_PostsEachSavedEnv(t *testing.T) {
 	pinAgentryConfig(t)
 	must := func(err error) {
@@ -154,8 +164,8 @@ func TestApplyClusterEnvDefaults_PostsEachSavedEnv(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(saveEnv("test", &StoredEnv{Name: "JIRA_TOKEN", Value: "j"}))
-	must(saveEnv("test", &StoredEnv{Name: "STRIPE_KEY", Value: "s"}))
+	must(saveEnv("test", defaultProfile, &StoredEnv{Name: "JIRA_TOKEN", Value: "j"}))
+	must(saveEnv("test", defaultProfile, &StoredEnv{Name: "STRIPE_KEY", Value: "s"}))
 
 	var (
 		mu      sync.Mutex
@@ -174,26 +184,20 @@ func TestApplyClusterEnvDefaults_PostsEachSavedEnv(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	hook := applyClusterEnvDefaults(func() string { return "test" }, srv.Client())
-
-	// Rewrite the in-tree http.invalid URL to our test server's URL.
-	// We do this by injecting a RoundTripper that swaps the host.
-	hc := &http.Client{Transport: &hostRewriter{
-		base:    srv.URL,
-		wrapped: srv.Client().Transport,
-	}}
-	hook = applyClusterEnvDefaults(func() string { return "test" }, hc)
+	hc := &http.Client{Transport: &hostRewriter{base: srv.URL, wrapped: srv.Client().Transport}}
+	hook := applyClusterEnvDefaults(constCtx("test", defaultProfile), hc)
 
 	if err := hook(context.Background(), mcp.SandboxInfo{SandboxID: "sb_1"}); err != nil {
 		t.Fatalf("hook returned err: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("got %d POSTs; want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d POSTs; want 3 (2 staged + AGENTRY_PROFILE auto-stamp)", len(got))
 	}
 	if !strings.HasPrefix(gotPath, "/api/sandboxes/sb_1/secrets") {
 		t.Errorf("path = %q; want /api/sandboxes/sb_1/secrets", gotPath)
 	}
-	// Both names should appear in the staged requests.
+	// All three names should appear; source should be the canonical
+	// "cli-cluster-default" string so the runtime can attribute them.
 	names := map[string]bool{}
 	for _, b := range got {
 		if n, ok := b["name"].(string); ok {
@@ -205,29 +209,51 @@ func TestApplyClusterEnvDefaults_PostsEachSavedEnv(t *testing.T) {
 			}
 		}
 	}
-	if !names["JIRA_TOKEN"] || !names["STRIPE_KEY"] {
-		t.Errorf("staged names = %v; missing one of JIRA_TOKEN/STRIPE_KEY", names)
+	for _, want := range []string{"JIRA_TOKEN", "STRIPE_KEY", "AGENTRY_PROFILE"} {
+		if !names[want] {
+			t.Errorf("missing %q in staged names: %v", want, names)
+		}
 	}
 }
 
-func TestApplyClusterEnvDefaults_NoEnvs_NoOp(t *testing.T) {
+func TestApplyClusterEnvDefaults_StampsProfileEvenWhenNothingStaged(t *testing.T) {
 	pinAgentryConfig(t)
+	// No saveEnv calls — the only thing the hook should post is the
+	// AGENTRY_PROFILE auto-stamp. Stamping unconditionally is
+	// load-bearing: app code that branches on profile shouldn't
+	// require the operator to have set other envs.
+	var got []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("hook fired %s with no envs staged", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		got = append(got, b)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 	hc := &http.Client{Transport: &hostRewriter{base: srv.URL, wrapped: srv.Client().Transport}}
-	hook := applyClusterEnvDefaults(func() string { return "test" }, hc)
+	hook := applyClusterEnvDefaults(constCtx("test", "dev"), hc)
 	if err := hook(context.Background(), mcp.SandboxInfo{SandboxID: "sb_x"}); err != nil {
-		t.Errorf("hook with no envs should not error: %v", err)
+		t.Errorf("hook should succeed with only auto-stamp: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want exactly 1 POST (the auto-stamp), got %d", len(got))
+	}
+	if name, _ := got[0]["name"].(string); name != "AGENTRY_PROFILE" {
+		t.Errorf("name = %q; want AGENTRY_PROFILE", name)
+	}
+	if v, _ := got[0]["value"].(string); v != "dev" {
+		t.Errorf("AGENTRY_PROFILE value = %q; want dev", v)
 	}
 }
 
 func TestApplyClusterEnvDefaults_EmptyCluster_NoOp(t *testing.T) {
 	pinAgentryConfig(t)
 	// Save an env under "other-cluster" so the disk isn't empty —
-	// but the hook is asked about "" (cluster unset). Should skip.
-	if err := saveEnv("other-cluster", &StoredEnv{Name: "X", Value: "v"}); err != nil {
+	// but the hook is asked about "" (cluster unset). Should skip
+	// entirely, including the AGENTRY_PROFILE stamp (no cluster
+	// context = no sandbox to attribute the profile to).
+	if err := saveEnv("other-cluster", defaultProfile, &StoredEnv{Name: "X", Value: "v"}); err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +261,7 @@ func TestApplyClusterEnvDefaults_EmptyCluster_NoOp(t *testing.T) {
 	}))
 	defer srv.Close()
 	hc := &http.Client{Transport: &hostRewriter{base: srv.URL, wrapped: srv.Client().Transport}}
-	hook := applyClusterEnvDefaults(func() string { return "" }, hc)
+	hook := applyClusterEnvDefaults(constCtx("", defaultProfile), hc)
 	if err := hook(context.Background(), mcp.SandboxInfo{SandboxID: "sb_x"}); err != nil {
 		t.Errorf("hook with empty cluster should not error: %v", err)
 	}

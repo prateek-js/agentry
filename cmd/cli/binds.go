@@ -39,26 +39,31 @@ type StoredBind struct {
 	Env     map[string]string `json:"env"`
 }
 
-// bindsDir returns ~/.ad-sandbox/services/<cluster>/ for the given
-// cluster, honouring $XDP_CONFIG for tests. Does NOT create the
-// directory — saveBind() does that lazily.
-func bindsDir(cluster string) string {
+// bindsDir returns the cluster + profile-scoped service bind
+// directory, honouring $AGENTRY_CONFIG. Does NOT create the
+// directory — saveBind() does that lazily. Runs a one-time migration
+// that moves legacy <cluster>/<service>.json files (pre-profile
+// layout) into <cluster>/default/<service>.json. Idempotent.
+func bindsDir(cluster, profile string) string {
 	if cluster == "" {
 		return ""
 	}
-	// Sibling of agentry.json: derive from ConfigPath().
+	if profile == "" {
+		profile = defaultProfile
+	}
+	migrateLegacyProfileLayout()
 	base := filepath.Dir(ConfigPath())
-	return filepath.Join(base, "services", cluster)
+	return filepath.Join(base, "services", cluster, profile)
 }
 
-func bindFilePath(cluster, service string) string {
-	return filepath.Join(bindsDir(cluster), service+".json")
+func bindFilePath(cluster, profile, service string) string {
+	return filepath.Join(bindsDir(cluster, profile), service+".json")
 }
 
 // loadBind reads one stored bind. Returns (nil, nil) when the file
 // doesn't exist — "not staged" is a valid state, not an error.
-func loadBind(cluster, service string) (*StoredBind, error) {
-	raw, err := os.ReadFile(bindFilePath(cluster, service))
+func loadBind(cluster, profile, service string) (*StoredBind, error) {
+	raw, err := os.ReadFile(bindFilePath(cluster, profile, service))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -67,21 +72,21 @@ func loadBind(cluster, service string) (*StoredBind, error) {
 	}
 	var b StoredBind
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", bindFilePath(cluster, service), err)
+		return nil, fmt.Errorf("parse %s: %w", bindFilePath(cluster, profile, service), err)
 	}
 	return &b, nil
 }
 
 // saveBind writes a bind atomically with mode 0600. Creates the
 // parent dir with 0700.
-func saveBind(cluster string, b *StoredBind) error {
+func saveBind(cluster, profile string, b *StoredBind) error {
 	if cluster == "" {
 		return fmt.Errorf("cluster is empty; run `agentry cluster use <name>` first")
 	}
 	if b == nil || b.Service == "" {
 		return fmt.Errorf("service is required")
 	}
-	dir := bindsDir(cluster)
+	dir := bindsDir(cluster, profile)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
@@ -89,7 +94,7 @@ func saveBind(cluster string, b *StoredBind) error {
 	if err != nil {
 		return err
 	}
-	path := bindFilePath(cluster, b.Service)
+	path := bindFilePath(cluster, profile, b.Service)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
 		return err
@@ -103,8 +108,8 @@ func saveBind(cluster string, b *StoredBind) error {
 
 // deleteBind removes the on-disk file. Missing file is not an error
 // — the user wanted it gone, it's gone.
-func deleteBind(cluster, service string) error {
-	err := os.Remove(bindFilePath(cluster, service))
+func deleteBind(cluster, profile, service string) error {
+	err := os.Remove(bindFilePath(cluster, profile, service))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -113,14 +118,15 @@ func deleteBind(cluster, service string) error {
 
 // applyClusterDefaults returns the PostCreateHook used by `agentry stdio`.
 // On every successful sandbox_create the hook reads stored binds for
-// the active cluster and POSTs each to /api/sandboxes/{id}/bindings
-// through the same tunneled HTTP client.
+// the active (cluster, profile) pair and POSTs each to
+// /api/sandboxes/{id}/bindings through the same tunneled HTTP client.
 //
-// getCluster is called PER INVOCATION so the binds match whichever
-// cluster the request was actually routed to — important because the
-// stdio process is long-running and `agentry cluster use <name>` can
-// change the answer between sandbox_creates. A nil getter or empty
-// string skips the hook entirely (degrades gracefully).
+// getCtx is called PER INVOCATION so the binds match whichever
+// cluster + profile the request was actually routed to — important
+// because the stdio process is long-running and `agentry cluster use`
+// or `agentry profile use` can change the answer between
+// sandbox_creates. A nil getter or empty cluster skips the hook
+// entirely (degrades gracefully).
 //
 // The hook is best-effort: a missing config, an empty store, or one
 // failing service all log + continue. The LLM still gets a working
@@ -128,16 +134,16 @@ func deleteBind(cluster, service string) error {
 // land. The strictness floor is: NEVER block sandbox creation on a
 // laptop-side issue, because that's the worst UX of any failure
 // mode here.
-func applyClusterDefaults(getCluster func() string, hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
+func applyClusterDefaults(getCtx func() (cluster, profile string), hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
 	return func(ctx context.Context, info mcp.SandboxInfo) error {
-		if getCluster == nil {
+		if getCtx == nil {
 			return nil
 		}
-		cluster := getCluster()
+		cluster, profile := getCtx()
 		if cluster == "" {
 			return nil
 		}
-		binds, err := listBinds(cluster)
+		binds, err := listBinds(cluster, profile)
 		if err != nil {
 			return fmt.Errorf("list binds: %w", err)
 		}
@@ -198,10 +204,10 @@ func postBinding(ctx context.Context, hc *http.Client, sandboxID string, body an
 	return nil
 }
 
-// listBinds returns every stored bind for a cluster, sorted by
-// service name so output is deterministic.
-func listBinds(cluster string) ([]*StoredBind, error) {
-	dir := bindsDir(cluster)
+// listBinds returns every stored bind for a (cluster, profile),
+// sorted by service name so output is deterministic.
+func listBinds(cluster, profile string) ([]*StoredBind, error) {
+	dir := bindsDir(cluster, profile)
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -215,7 +221,7 @@ func listBinds(cluster string) ([]*StoredBind, error) {
 			continue
 		}
 		service := strings.TrimSuffix(e.Name(), ".json")
-		b, err := loadBind(cluster, service)
+		b, err := loadBind(cluster, profile, service)
 		if err != nil {
 			return nil, err
 		}

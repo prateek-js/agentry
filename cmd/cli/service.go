@@ -91,6 +91,7 @@ func serviceBindCLI(args []string) int {
 	fs := flag.NewFlagSet("agentry service bind", flag.ContinueOnError)
 	sandbox := fs.String("sandbox", "", "one-shot bind: target this sandbox only (omit to store as cluster default)")
 	fromEnv := fs.Bool("from-env", false, "read values from the current shell env instead of prompting")
+	profile := fs.String("profile", "", "profile to store the bind under (default: active profile)")
 	flagArgs, posArgs := splitFlagsAndPositionals(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -204,16 +205,17 @@ func serviceBindCLI(args []string) int {
 	if cfg.Cluster == "" {
 		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
-	if err := saveBind(cfg.Cluster, &StoredBind{
+	prof := resolveProfile(cfg, *profile)
+	if err := saveBind(cfg.Cluster, prof, &StoredBind{
 		Service: service,
 		Version: version,
 		Env:     values,
 	}); err != nil {
 		return die("save bind: %v", err)
 	}
-	fmt.Printf("agentry service bind: cluster=%s service=%s (%d vars, stored)\n",
-		cfg.Cluster, service, len(values))
-	fmt.Fprintln(os.Stderr, "  applied automatically to every new sandbox in this cluster.")
+	fmt.Printf("agentry service bind: cluster=%s profile=%s service=%s (%d vars, stored)\n",
+		cfg.Cluster, prof, service, len(values))
+	fmt.Fprintln(os.Stderr, "  applied automatically to every new sandbox you create with this profile active.")
 	return 0
 }
 
@@ -248,16 +250,17 @@ Values themselves stay in ~/.agentry/services/<cluster>/<svc>.json
 	if cfg.Cluster == "" {
 		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
-	binds, err := listBinds(cfg.Cluster)
+	prof := resolveProfile(cfg, "")
+	binds, err := listBinds(cfg.Cluster, prof)
 	if err != nil {
 		return die("list binds: %v", err)
 	}
 	if len(binds) == 0 {
-		fmt.Printf("No bindings stored for cluster %q.\n", cfg.Cluster)
+		fmt.Printf("No bindings stored for cluster %q profile %q.\n", cfg.Cluster, prof)
 		fmt.Fprintf(os.Stderr, "Run `agentry service bind <service>` to add one.\n")
 		return 0
 	}
-	fmt.Printf("Cluster %q — bindings stored at %s\n\n", cfg.Cluster, bindsDir(cfg.Cluster))
+	fmt.Printf("Cluster %q profile %q — bindings stored at %s\n\n", cfg.Cluster, prof, bindsDir(cfg.Cluster, prof))
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SERVICE\tINPUTS\tENV VARS")
@@ -294,10 +297,11 @@ func serviceUnbindCLI(args []string) int {
 	if cfg.Cluster == "" {
 		return die("no cluster set; run `agentry cluster use <name>` first")
 	}
-	if err := deleteBind(cfg.Cluster, args[0]); err != nil {
+	prof := resolveProfile(cfg, "")
+	if err := deleteBind(cfg.Cluster, prof, args[0]); err != nil {
 		return die("delete: %v", err)
 	}
-	fmt.Printf("agentry service unbind: cluster=%s service=%s removed\n", cfg.Cluster, args[0])
+	fmt.Printf("agentry service unbind: cluster=%s profile=%s service=%s removed\n", cfg.Cluster, prof, args[0])
 	return 0
 }
 

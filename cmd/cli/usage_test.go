@@ -15,6 +15,8 @@ func TestUsage_HasAllCurrentCommands(t *testing.T) {
 		"login", "init", "logout",
 		// daily
 		"sandbox", "pull", "env",
+		// multi-env
+		"profile",
 		// editor integration
 		"mcp",
 		// admin
