@@ -170,6 +170,21 @@ func applyClusterEnvDefaults(getCtx func() (cluster, profile string), hc *http.C
 		// else is staged — app code branching on prod-only features
 		// shouldn't depend on the operator having set other envs.
 		envs = append(envs, &StoredEnv{Name: "AGENTRY_PROFILE", Value: profile})
+		// When auth is enabled on this (cluster, profile), pull the
+		// state and stamp the sidecar's contract: AGENTRY_AUTH_ENABLED
+		// + the DB-URL pointer + the HMAC secret + each provider's
+		// client_id / client_secret. The sidecar inside the sandbox
+		// reads these at boot.
+		if authState, _ := loadAuthState(cluster, profile); authState != nil && authState.Enabled {
+			envs = append(envs,
+				&StoredEnv{Name: "AGENTRY_AUTH_ENABLED", Value: "true"},
+				&StoredEnv{Name: "AGENTRY_AUTH_DB", Value: authState.DBBinding},
+				&StoredEnv{Name: "AGENTRY_AUTH_SECRET", Value: authState.Secret},
+			)
+			for name, val := range authStateProviderEnv(authState) {
+				envs = append(envs, &StoredEnv{Name: name, Value: val})
+			}
+		}
 		var firstErr error
 		applied := 0
 		for _, e := range envs {

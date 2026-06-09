@@ -17,6 +17,8 @@ func TestUsage_HasAllCurrentCommands(t *testing.T) {
 		"sandbox", "pull", "env",
 		// multi-env
 		"profile",
+		// auth
+		"auth",
 		// editor integration
 		"mcp",
 		// admin

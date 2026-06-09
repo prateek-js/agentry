@@ -70,6 +70,13 @@ MULTI-ENV (profiles — one cluster, many configurations)
   agentry profile show [--profile <name>]  list envs + binds under a profile
   agentry profile copy <src> <dst>         clone one profile into another
 
+AUTH (login + sessions for apps built on agentry)
+  agentry auth                             show the active profile's auth posture
+  agentry auth enable                      fitness-check the DB + mint AUTH_SECRET
+  agentry auth disable                     remove auth state for this profile
+  agentry auth providers add <name>        register an OAuth provider (google, github, …)
+  agentry auth providers list              table of every provider on this profile
+
 EDITOR INTEGRATION
   agentry mcp                              MCP server on stdin/stdout
                                            (alias: agentry stdio)
@@ -141,6 +148,8 @@ func dispatch(args []string) int {
 		return cmdEnv(args[1:])
 	case "profile":
 		return cmdProfile(args[1:])
+	case "auth":
+		return cmdAuth(args[1:])
 	case "pull":
 		return cmdPull(args[1:])
 	case "share":
