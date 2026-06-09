@@ -63,6 +63,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - build-essential: pip wheels cover the common case; users can
 #            install on demand if they need to compile from source
 ARG NODE_VERSION=22.12.0
+ARG GH_VERSION=2.62.0
 ARG TARGETARCH
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -130,6 +131,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     unzip -q /tmp/awscliv2.zip -d /tmp; \
     /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
     rm -rf /tmp/awscliv2.zip /tmp/aws; \
+    # GitHub CLI — github.com/cli/cli. Reads GITHUB_TOKEN from env on
+    # every invocation, so when the operator runs `agentry service bind
+    # github`, the sandbox can `gh repo clone`, `gh pr create`, etc.
+    # without an extra `gh auth login`. Official .deb pinned to the
+    # current major release so the install is reproducible.
+    GH_ARCH=${NODE_ARCH/x64/amd64}; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.deb" -o /tmp/gh.deb; \
+    dpkg -i /tmp/gh.deb; \
+    rm -f /tmp/gh.deb; \
     # ipykernel for the /v1/code interpreter. --no-deps would shave a
     # few MB but breaks output rendering; the full dep tree is ~80 MB
     # and worth it for a real Jupyter experience.

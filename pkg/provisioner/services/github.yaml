@@ -1,0 +1,53 @@
+name: github
+display_name: GitHub
+category: developer
+description: |
+  GitHub API access for the sandbox. Stamps GITHUB_TOKEN (read by gh
+  CLI, git over HTTPS, octokit, PyGithub, go-github, and every other
+  GitHub SDK by convention) plus GITHUB_USERNAME for convenience. Once
+  bound, the LLM can clone any repo your token reaches, edit, push, and
+  open PRs via `gh` — wired into the runtime image at /usr/bin/gh.
+
+fields:
+  - name: token
+    label: Personal Access Token (PAT)
+    placeholder: ghp_… or github_pat_…
+    secret: true
+    required: true
+    prod_required: true
+    pattern: ^(gh[a-z]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})$
+  - name: username
+    label: GitHub username (used for git config + sanity messages)
+    placeholder: octocat
+    required: true
+  - name: api_url
+    label: GitHub API base URL (blank for github.com; set for GHE)
+    placeholder: https://api.github.com
+    required: false
+
+inject:
+  env:
+    GITHUB_TOKEN: "{token}"
+    GITHUB_USERNAME: "{username}"
+    GITHUB_API_URL: "{api_url}"
+  creds:
+    /etc/sandbox/creds/github/token: "{token}"
+
+get_started: |
+  Create a Personal Access Token at
+    https://github.com/settings/tokens
+  Pick fine-grained tokens if you can — scope to just the repos this
+  cluster needs. Classic tokens work too; `repo` + `workflow` scopes
+  cover most workflows.
+
+  For GitHub Enterprise, set api_url to your GHE host's API root
+  (e.g. https://github.your-co.com/api/v3) and the token must come
+  from THAT host.
+
+  Once bound, the sandbox can:
+    - clone any repo the token reaches:  gh repo clone owner/repo
+    - read PR threads, issues:           gh pr view, gh issue list
+    - push + open PRs:                   git push && gh pr create
+
+  The LLM picks up the token from GITHUB_TOKEN automatically — no
+  additional `gh auth login` needed in the sandbox.

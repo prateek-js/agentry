@@ -32,6 +32,8 @@ REAL DATA, NEVER FAKE. No localStorage as primary persistence. No in-process dat
 
 SERVICE NAMED → CHECK FIRST. If the user names a service (jira, slack, stripe, openai, …), scan BOTH ` + "`bindings`" + ` AND ` + "`env`" + ` in the sandbox_create response BEFORE asking for credentials or saying it isn't configured. Match by substring on the name (JIRA_TOKEN counts for "jira"). The operator may have already staged it cluster-wide.
 
+EXISTING GITHUB REPO → CLONE, DON'T SCAFFOLD. If the user names a GitHub repo to work on (owner/repo or a github.com URL), and ` + "`GITHUB_TOKEN`" + ` is in the sandbox env, follow ` + "`docs_read(\"skills/github\")`" + ` — clone the repo into ` + "`/workspace/projects/<repo-name>`" + `, then ` + "`project_create`" + ` with the matching kind (don't let project_create scaffold over real files — it skips existing ones by design). If ` + "`GITHUB_TOKEN`" + ` is missing, STOP and ask the operator to run ` + "`agentry service bind github`" + ` rather than cloning a stranger's repo or hand-rolling fake creds.
+
 YOU LIVE IN THE SANDBOX. After sandbox_create succeeds, EVERY action — file write, command run, doc read, search — happens through agentry tools (file_*, command_*, docs_read, project_*). NEVER reach for a host-side shell tool to "look around"; the sandbox docs and code are inside the container, NOT on your machine. Telltale signs you're on the wrong filesystem and must STOP: paths starting with /System/, /Users/, OrbStack/, /var/lib/buildkit/, /private/var/, or anything outside /workspace, /etc/sandbox/, /tmp/sandbox/. If you see those, your last command went to the host — re-run it via command_run or, for docs, docs_read.
 
 BOOTSTRAP:

@@ -159,7 +159,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • skills/theme-factory/themes/<theme>    — one of: arctic-frost, botanical-garden, desert-rose, forest-canopy, golden-hour, midnight-galaxy, modern-minimalist, ocean-depths, sunset-boulevard, tech-innovation\n" +
 			"  • skills/brand-guidelines                — brand consistency\n" +
 			"  • skills/webapp-testing                  — Playwright + screenshot testing\n" +
-			"  • skills/web-artifacts-builder           — single-file HTML artifacts",
+			"  • skills/web-artifacts-builder           — single-file HTML artifacts\n" +
+			"  • skills/github                          — work on existing GitHub repos (precondition: GITHUB_TOKEN in env)",
 	}, docsRead(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_grep",

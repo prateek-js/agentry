@@ -39,6 +39,7 @@ These rules apply to every recipe below. They are not stack-specific.
 | "test the app I built", "browser tests", "screenshot the page" | (any kind) | `skills/webapp-testing/SKILL.md` |
 | "consistent brand voice", "design system across pages" | (any kind) | `skills/brand-guidelines/SKILL.md` |
 | User EXPLICITLY asked for a single-file HTML ("give me one HTML file I can email") | n/a — emit the artifact, no project | `skills/web-artifacts-builder/SKILL.md` |
+| User names a GitHub repo to work on ("fix bug in OWNER/REPO", "open a PR against …") | clone, then `kind` matches the repo's stack | `skills/github/SKILL.md` (precondition: `GITHUB_TOKEN` in env) |
 
 All paths produce code that follows `coding-style.md` (80-100 lines
 per file, feature-folder layout) and runs as the ONE managed project
