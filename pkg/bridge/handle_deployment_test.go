@@ -216,47 +216,86 @@ func TestHandleDeployment_PreservesQueryString(t *testing.T) {
 	}
 }
 
-func TestHandleDeployment_StripsCookieAndAuthorization(t *testing.T) {
-	b, reg, srv := startBrokerWithRegistry(t)
-	bsrv := httptest.NewServer(b.Handler())
-	t.Cleanup(bsrv.Close)
+// TestHandleDeployment_StripsClerkOnly verifies the bridge's
+// selective cookie strip: Clerk dashboard cookies (and Authorization)
+// are dropped before they reach the user's app, but every other
+// cookie passes through unchanged. Pre-m2 the bridge stripped the
+// entire Cookie header, which broke the in-sandbox authproxy sidecar
+// because agentry_csrf and agentry_session never reached it.
+func TestHandleDeployment_StripsClerkOnly(t *testing.T) {
+	cases := []struct {
+		name     string
+		cookie   string
+		wantUp   string // expected Cookie header upstream
+		wantAuth string // expected Authorization header upstream (always "")
+	}{
+		{
+			name:   "only Clerk cookies — strip entirely",
+			cookie: "__session=clerk; __client_uat=ts; __client_state=foo",
+			wantUp: "",
+		},
+		{
+			name:   "only authproxy cookies — pass through",
+			cookie: "agentry_csrf=tokA; agentry_session=tokB",
+			wantUp: "agentry_csrf=tokA; agentry_session=tokB",
+		},
+		{
+			name:   "mixed — strip Clerk, keep authproxy",
+			cookie: "__session=clerk; agentry_csrf=tokA; __client_uat=ts; agentry_session=tokB",
+			wantUp: "agentry_csrf=tokA; agentry_session=tokB",
+		},
+		{
+			name:   "third-party cookie (unknown name) — pass through",
+			cookie: "ga_session=ga; agentry_csrf=tokA",
+			wantUp: "ga_session=ga; agentry_csrf=tokA",
+		},
+	}
 
-	got := make(chan http.Header, 1)
-	joinCluster(t, bsrv.URL, "h", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hdrCopy := r.Header.Clone()
-		select {
-		case got <- hdrCopy:
-		default:
-		}
-		w.WriteHeader(204)
-	}))
-	mustHaveClusters(t, bsrv.URL, []string{"h"})
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			b, reg, srv := startBrokerWithRegistry(t)
+			bsrv := httptest.NewServer(b.Handler())
+			t.Cleanup(bsrv.Close)
 
-	reg.Set(DeployRoute{
-		Hostname: "x.agentry.live", Kind: "deployment",
-		ClusterID: "h", DeploymentID: "d", OrgID: "org_x",
-	})
-	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Host = "x.agentry.live"
-	req.Header.Set("Cookie", "__session=clerk-secret")
-	req.Header.Set("Authorization", "Bearer pat_secret")
-	req.Header.Set("X-Stay", "keep-me")
-	resp, _ := http.DefaultClient.Do(req)
-	resp.Body.Close()
+			got := make(chan http.Header, 1)
+			joinCluster(t, bsrv.URL, "h", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hdrCopy := r.Header.Clone()
+				select {
+				case got <- hdrCopy:
+				default:
+				}
+				w.WriteHeader(204)
+			}))
+			mustHaveClusters(t, bsrv.URL, []string{"h"})
 
-	select {
-	case h := <-got:
-		if h.Get("Cookie") != "" {
-			t.Errorf("Cookie leaked to upstream: %q", h.Get("Cookie"))
-		}
-		if h.Get("Authorization") != "" {
-			t.Errorf("Authorization leaked to upstream: %q", h.Get("Authorization"))
-		}
-		if h.Get("X-Stay") != "keep-me" {
-			t.Errorf("non-secret header X-Stay was dropped (got %q)", h.Get("X-Stay"))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("upstream never got the request")
+			reg.Set(DeployRoute{
+				Hostname: "x.agentry.live", Kind: "deployment",
+				ClusterID: "h", DeploymentID: "d", OrgID: "org_x",
+			})
+			req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+			req.Host = "x.agentry.live"
+			req.Header.Set("Cookie", tc.cookie)
+			req.Header.Set("Authorization", "Bearer pat_secret")
+			req.Header.Set("X-Stay", "keep-me")
+			resp, _ := http.DefaultClient.Do(req)
+			resp.Body.Close()
+
+			select {
+			case h := <-got:
+				if got := h.Get("Cookie"); got != tc.wantUp {
+					t.Errorf("Cookie upstream: got %q, want %q", got, tc.wantUp)
+				}
+				if h.Get("Authorization") != "" {
+					t.Errorf("Authorization leaked: %q", h.Get("Authorization"))
+				}
+				if h.Get("X-Stay") != "keep-me" {
+					t.Errorf("X-Stay dropped: %q", h.Get("X-Stay"))
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("upstream never got the request")
+			}
+		})
 	}
 }
 

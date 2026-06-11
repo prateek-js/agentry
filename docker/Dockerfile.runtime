@@ -37,11 +37,24 @@ COPY . .
 
 # CGO_ENABLED=0 + -trimpath = fully static, reproducible binary.
 # -ldflags strip the symbol table and DWARF data (~3-5 MB saved).
+#
+# We build two binaries from this stage:
+#
+#   agentry-runtime — the in-sandbox HTTP daemon. PID 1 of every
+#                     sandbox container.
+#   authproxy       — the per-app auth sidecar (m2). Bundled in the
+#                     runtime image so `project_start` can spawn it
+#                     in front of the user's app when
+#                     AGENTRY_AUTH_ENABLED=true. Same binary is
+#                     copied into deployed OCI images by deploy_build.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" \
-        -o /out/agentry-runtime ./cmd/runtime
+        -o /out/agentry-runtime ./cmd/runtime && \
+    CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w" \
+        -o /out/authproxy ./cmd/authproxy
 
 # ─── Stage 2: Runtime image ──────────────────────────────────────────────────
 FROM python:3.13-slim AS runtime
@@ -108,8 +121,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # NodeSource deb (which bundles bonus tooling we don't use), and
     # avoids the apt overhead of pulling in libicu et al twice.
     case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-        amd64) NODE_ARCH=x64; AWS_ARCH=x86_64 ;; \
-        arm64) NODE_ARCH=arm64; AWS_ARCH=aarch64 ;; \
+        amd64) NODE_ARCH=x64;   AWS_ARCH=x86_64;  GH_ARCH=amd64 ;; \
+        arm64) NODE_ARCH=arm64; AWS_ARCH=aarch64; GH_ARCH=arm64 ;; \
         *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -136,7 +149,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # github`, the sandbox can `gh repo clone`, `gh pr create`, etc.
     # without an extra `gh auth login`. Official .deb pinned to the
     # current major release so the install is reproducible.
-    GH_ARCH=${NODE_ARCH/x64/amd64}; \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.deb" -o /tmp/gh.deb; \
     dpkg -i /tmp/gh.deb; \
     rm -f /tmp/gh.deb; \
@@ -167,6 +179,10 @@ RUN mkdir -p /etc/containers && \
 
 # Runtime binary, security hardening, and credential plumbing.
 COPY --from=builder /out/agentry-runtime /usr/local/bin/agentry-runtime
+# m2: auth sidecar. project_start spawns this when the operator's
+# auth state stamps AGENTRY_AUTH_ENABLED=true; deploy_build COPYs the
+# same binary into deployed OCI images via a final layer.
+COPY --from=builder /out/authproxy /usr/local/bin/authproxy
 COPY docker/lockdown.sh /opt/sandbox/lockdown.sh
 COPY docker/build-image /usr/local/bin/build-image
 COPY docker/sandbox-init.sh /usr/local/bin/sandbox-init

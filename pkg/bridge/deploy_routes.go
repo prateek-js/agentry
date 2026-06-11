@@ -194,15 +194,37 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 	originalQuery := r.URL.RawQuery
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			// Preserve the public hostname for downstream consumers.
+			// The runtime's app_proxy clobbers Host to 127.0.0.1:PORT
+			// when it forwards into the sandbox, so any handler past
+			// that point (notably the in-sandbox authproxy sidecar's
+			// same-origin check) needs to read X-Forwarded-Host to know
+			// the original URL the browser saw. Set this BEFORE we
+			// rewrite the URL.
+			if req.Header.Get("X-Forwarded-Host") == "" {
+				req.Header.Set("X-Forwarded-Host", req.Host)
+			}
+			if req.Header.Get("X-Forwarded-Proto") == "" {
+				req.Header.Set("X-Forwarded-Proto", "https")
+			}
 			req.URL.Scheme = "http"
 			req.URL.Host = "cluster-" + route.ClusterID
 			req.URL.Path = upstreamPath
 			req.URL.RawQuery = originalQuery
-			// Strip cookies + Authorization at this hop so the user's
-			// app doesn't see Clerk-session bytes. Slice landing next
-			// reintroduces explicit X-Agentry-User-* headers stamped by
-			// the bridge Clerk middleware.
-			req.Header.Del("Cookie")
+			// Selectively strip Clerk dashboard cookies at this hop so
+			// a user logged into app.agentry.run doesn't ship Clerk
+			// session bytes into a sandbox app. Everything else passes
+			// through — agentry_csrf and agentry_session belong to the
+			// in-sandbox authproxy sidecar, and dropping them broke
+			// sign-in (see m2 Bug C: blanket Cookie strip caused
+			// "CSRF cookie missing" 403 on every preview/deploy URL).
+			if filtered := filterClerkCookies(req.Header.Get("Cookie")); filtered != "" {
+				req.Header.Set("Cookie", filtered)
+			} else {
+				req.Header.Del("Cookie")
+			}
+			// Authorization is always Clerk-issued (Bearer JWT), so a
+			// blanket drop is still correct.
 			req.Header.Del("Authorization")
 		},
 		Transport: cluster.rt,
@@ -215,6 +237,63 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// filterClerkCookies removes Clerk-issued dashboard cookies from a
+// raw Cookie header value, returning the surviving cookies as a
+// re-joined header. Empty string means "no surviving cookies" — the
+// caller deletes the Cookie header entirely.
+//
+// We strip:
+//   - __session         — Clerk's primary session cookie
+//   - __client_uat      — Clerk's last-active timestamp
+//   - __client_*        — every Clerk client-prefixed cookie
+//
+// Everything else passes through, including the in-sandbox authproxy
+// sidecar's agentry_csrf + agentry_session cookies (without which
+// sign-in is impossible — see m2 Bug C).
+//
+// Parsing rule: cookies in a request header are name=value pairs
+// separated by "; " per RFC 6265. We split on "; ", trim, and check
+// the name half. Malformed entries (no "=") are dropped silently
+// because that's what every other HTTP client does — we're not in
+// the validation business here, just the filtering one.
+func filterClerkCookies(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		eq := strings.IndexByte(p, '=')
+		var name string
+		if eq < 0 {
+			name = p
+		} else {
+			name = p[:eq]
+		}
+		if isClerkCookieName(name) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, "; ")
+}
+
+// isClerkCookieName matches the Clerk cookie set. Centralised so a
+// future Clerk SDK update lands as a one-line change here. Note: the
+// names are case-sensitive per RFC 6265, and Clerk always emits the
+// double-underscore prefix.
+func isClerkCookieName(name string) bool {
+	switch name {
+	case "__session", "__client_uat":
+		return true
+	}
+	return strings.HasPrefix(name, "__client_")
 }
 
 // Admin handlers — used by the control plane to push deploy routes.

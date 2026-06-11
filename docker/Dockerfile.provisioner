@@ -50,7 +50,10 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" \
-    -o /provisioner ./cmd/provisioner
+    -o /provisioner ./cmd/provisioner && \
+    CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w" \
+    -o /authproxy ./cmd/authproxy
 
 FROM debian:bookworm-slim
 # ca-certificates so HTTPS calls to app.agentry.run / bridge.agentry.run
@@ -125,6 +128,11 @@ RUN set -eux; \
 # provisioner in the first place.
 
 COPY --from=builder /provisioner /usr/local/bin/agentry-provisioner
+# m2: authproxy sidecar binary. deploy_build wraps every deployed
+# image with a final layer that COPYs this onto the railpack output,
+# then sets ENTRYPOINT to it with AGENTRY_AUTHPROXY_EXEC pinned to
+# the image's original CMD/ENTRYPOINT. See pkg/provisioner/deploy_wrap.go.
+COPY --from=builder /authproxy /usr/local/share/agentry/authproxy
 
 # Persistent state lands here. Single Docker volume in the run command
 # binds to /var/lib/agentry-provisioner; cert bundle + lockfile-like

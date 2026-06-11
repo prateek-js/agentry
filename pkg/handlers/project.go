@@ -50,6 +50,14 @@ type Project struct {
 	// A fresh StartProject creates a new Project struct so the flag
 	// never leaks across lifecycles.
 	manuallyStopped bool
+
+	// internalPort is non-zero when the project was wrapped by the
+	// authproxy sidecar (m2). It's the port the user's app actually
+	// binds to (3001 by default) — INTERNAL to the wrap, never the
+	// right answer for a share/deploy target. Status calls strip it
+	// from the reported Ports list so anything picking "the port"
+	// (LLM, dashboard port picker) gets only the public-facing one.
+	internalPort int
 }
 
 // ProjectManager manages the lifecycle of all projects.
@@ -171,7 +179,12 @@ func (pm *ProjectManager) StartProject(name string) (*Project, error) {
 		configPath = filepath.Join(projectDir, projectConfigFile)
 		data, err = os.ReadFile(configPath)
 		if err != nil {
-			return nil, fmt.Errorf("project config not found for '%s'", name)
+			// Error doubles as LLM steering: name the expected path
+			// and the tool that creates it, so the model's next move
+			// is project_create rather than guesswork.
+			return nil, fmt.Errorf(
+				"project config not found for %q — expected %s (scaffold it with project_create; never write the manifest by hand). Existing projects: ls /workspace/projects/",
+				name, filepath.Join(pm.workDir, "projects", name, projectConfigFile))
 		}
 	}
 
@@ -217,18 +230,27 @@ func (pm *ProjectManager) StartProject(name string) (*Project, error) {
 		return nil, fmt.Errorf("start_command is required")
 	}
 
+	// m2: when the operator has enabled auth on this profile,
+	// AGENTRY_AUTH_ENABLED=true is stamped into env via the cluster-
+	// default env hook. Wrap the user's command with the authproxy
+	// sidecar so it sits between the bridge and the user's process.
+	// The sidecar listens on PORT (3000), spawns the user command
+	// with PORT+1 (3001), and injects HMAC-signed identity headers.
+	startCmd, startArgs, env, internalPort := maybeWrapAuthSidecar(config.StartCommand, env)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, config.StartCommand[0], config.StartCommand[1:]...)
+	cmd := exec.CommandContext(ctx, startCmd, startArgs...)
 	cmd.Dir = projectDir
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	proj := &Project{
-		config: config,
-		cmd:    cmd,
-		cancel: cancel,
-		status: "starting",
-		health: "unknown",
+		config:       config,
+		cmd:          cmd,
+		cancel:       cancel,
+		status:       "starting",
+		health:       "unknown",
+		internalPort: internalPort,
 	}
 
 	// Set up log capture.
@@ -440,7 +462,7 @@ func (pm *ProjectManager) ListProjects() []models.ProjectStatus {
 		var ports []int
 		if proj.status == "running" {
 			uptime = time.Since(proj.startedAt).Round(time.Second).String()
-			ports = portsForPGID(proj.pid)
+			ports = filterInternalPort(portsForPGID(proj.pid), proj.internalPort)
 		}
 		result = append(result, models.ProjectStatus{
 			Name:         proj.config.Name,
@@ -533,6 +555,7 @@ func ProjectStartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Lock()
 		pid := proj.pid
+		internalPort := proj.internalPort
 		status := models.ProjectStatus{
 			Name:   proj.config.Name,
 			Type:   proj.config.Type,
@@ -541,7 +564,7 @@ func ProjectStartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Unlock()
 		if status.Status == "running" {
-			status.Ports = portsForPGID(pid)
+			status.Ports = filterInternalPort(portsForPGID(pid), internalPort)
 		}
 		Success(w, fmt.Sprintf("project '%s' started", req.Name), status)
 	}
@@ -587,6 +610,7 @@ func ProjectRestartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Lock()
 		pid := proj.pid
+		internalPort := proj.internalPort
 		status := models.ProjectStatus{
 			Name:   proj.config.Name,
 			Type:   proj.config.Type,
@@ -595,7 +619,7 @@ func ProjectRestartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Unlock()
 		if status.Status == "running" {
-			status.Ports = portsForPGID(pid)
+			status.Ports = filterInternalPort(portsForPGID(pid), internalPort)
 		}
 		Success(w, fmt.Sprintf("project '%s' restarted", req.Name), status)
 	}
@@ -661,12 +685,17 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 		if p == 0 {
 			p = 8000
 		}
+		// sh -c + exec: substitutes ${PORT} when authproxy is wrapping
+		// us (PORT=3001 shifted from the sidecar's 3000), falls back to
+		// the kind's default when running directly. `exec` replaces sh
+		// so SIGTERM to the pgid reaches python directly — no orphan.
 		return projectCreateScaffold{
 			config: models.ProjectConfig{
-				Name:         name,
-				Type:         "app",
-				StartCommand: []string{"python3", "-m", "http.server", fmt.Sprintf("%d", p)},
-				AutoRestart:  true,
+				Name: name,
+				Type: "app",
+				StartCommand: []string{"sh", "-c",
+					fmt.Sprintf(`exec python3 -m http.server "${PORT:-%d}"`, p)},
+				AutoRestart: true,
 			},
 			files: map[string]string{
 				"index.html": staticHTMLStub(name),
@@ -682,10 +711,8 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 			config: models.ProjectConfig{
 				Name: name,
 				Type: "app",
-				StartCommand: []string{"streamlit", "run", "app.py",
-					"--server.port", fmt.Sprintf("%d", p),
-					"--server.address", "0.0.0.0",
-					"--server.headless", "true",
+				StartCommand: []string{"sh", "-c",
+					fmt.Sprintf(`exec streamlit run app.py --server.port "${PORT:-%d}" --server.address 0.0.0.0 --server.headless true`, p),
 				},
 				AutoRestart: true,
 			},
@@ -694,9 +721,10 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 				"requirements.txt": "streamlit\n",
 				// Procfile is read by railpack at deploy time to
 				// pick the production CMD. $PORT is set by the
-				// container runtime — sandbox dev uses port 8501,
-				// production uses agentry's deploy port. Same code,
-				// different runtimes.
+				// container runtime — sandbox dev uses port 8501
+				// (or 3001 when authproxy is wrapping), production
+				// uses agentry's deploy port. Same code, different
+				// runtimes.
 				"Procfile": "web: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true\n",
 			},
 		}, nil
@@ -710,10 +738,8 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 			config: models.ProjectConfig{
 				Name: name,
 				Type: "app",
-				StartCommand: []string{"uvicorn", "app:app",
-					"--host", "0.0.0.0",
-					"--port", fmt.Sprintf("%d", p),
-					"--reload",
+				StartCommand: []string{"sh", "-c",
+					fmt.Sprintf(`exec uvicorn app:app --host 0.0.0.0 --port "${PORT:-%d}" --reload`, p),
 				},
 				AutoRestart: true,
 			},

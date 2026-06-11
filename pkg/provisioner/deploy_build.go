@@ -423,7 +423,18 @@ func (p *Provisioner) handleDeployBuild(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	log.Printf("deploy-build: sandbox=%s OK — image=%s", sandboxID, imageRef)
+	// Step 5: m2 wrap — layer authproxy onto the railpack output and
+	// re-tag in place. We always wrap; auth-mode vs passthrough is a
+	// runtime env decision (AGENTRY_AUTH_ENABLED), so the image
+	// shape stays uniform across both modes.
+	if wrapErr := p.wrapImageWithAuthproxy(ctx, dockerCli, imageRef); wrapErr != nil {
+		log.Printf("deploy-build: sandbox=%s wrap step FAILED: %v", sandboxID, wrapErr)
+		writeError(w, http.StatusBadGateway,
+			"authproxy wrap step failed:\n"+wrapErr.Error())
+		return
+	}
+
+	log.Printf("deploy-build: sandbox=%s OK — image=%s (wrapped with authproxy)", sandboxID, imageRef)
 	writeJSON(w, http.StatusOK, DeployBuildResponse{ImageRef: imageRef})
 }
 
