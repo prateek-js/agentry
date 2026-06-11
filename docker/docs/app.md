@@ -11,6 +11,10 @@ projects, Procfiles, or Docker Compose. agentry apps ship as a single
 image with a single URL. If you find yourself making `projects/backend`
 and `projects/frontend`, stop — you're on the wrong path.
 
+**Prerequisite: `docs_read("CONTRACT")` — the five invariants
+(ports, one-project, services, auth, platform boundaries). This
+recipe assumes them.**
+
 ## ⚠️ READ THIS FIRST — scaffold BEFORE you explore
 
 The #1 way this recipe goes wrong is: the model spawns a Jupyter
@@ -52,7 +56,7 @@ first via `file_write` and `npm install` (no args, reads
 package.json). Same applies to any shell command with `<`, `>`, `|`,
 `&`, `;` in the argument.
 
-## ⚠️ BEFORE YOU SAY THE TASK IS DONE — call `sandbox_preflight`
+## ⚠️ BEFORE YOU SAY THE TASK IS DONE — run the real build
 
 `next dev` runs your code through Turbopack with relaxed type
 checking; `next build` runs the full TypeScript compile. Code that
@@ -63,17 +67,36 @@ not exist on type" (shape mismatch). These never surface from
 `port_wait` or curling the dev server — they only surface when
 something runs a real build.
 
-`sandbox_preflight` runs that build for you. Call it as the LAST step
-before you tell the user the task is complete:
+So run it yourself, as the LAST step before you tell the user the
+task is complete:
 
-- `ok=true`  → safe to report done.
-- `ok=false` → read `output` (verbatim compiler error), fix the
-  reported files via `file_write` or `file_replace`, then call
-  `sandbox_preflight` again. Repeat until ok=true.
+```
+project_stop name=app        # next build and next dev fight over .next/
+command_run "cd /workspace/projects/app && npm run build" (timeout 300)
+project_start name=app
+```
+
+- exit 0 → safe to report done.
+- non-zero → read the compiler error verbatim, fix the reported
+  files via `file_write` / `file_replace`, run the build again.
+  Repeat until it exits 0, then `project_start`.
 
 A missing import or stale type is a 60-second fix while you're still
 in the conversation. The same error caught only when the user later
 tries to ship the project costs them a round trip back to chat.
+
+## Port discipline — CONTRACT.md rule 1
+
+**Never pass `--port`, `-p`, or `--hostname` in `start_command`.**
+Use the scaffolded `["npm", "run", "dev"]` and let `next dev` honor
+the `PORT` env var the runtime sets. Full rationale in
+`docs_read("CONTRACT")` — the short version: when agentry auth is
+on, a sidecar owns the public port and your app gets `PORT=3001`;
+a hard-coded port collides and dies with `address already in use`.
+
+When auth is on, login UI is served by the platform at `/auth/login`
+(alias `/auth/signin`); your code reads `x-forwarded-email` /
+`-user` / `-name` / `-provider` headers. See `skills/auth/SKILL.md`.
 
 ## Layout — one managed Next.js project
 
@@ -150,7 +173,7 @@ Add libraries to `dependencies` only as you use them. Common picks:
 - Validation: `zod`
 - Forms: react-hook-form + zod
 - Tailwind: `tailwindcss postcss autoprefixer` + Tailwind config
-- Auth (if needed): `lucia` (lightweight) or `next-auth` (more turnkey)
+- Auth: **CHECK env first**. If `AGENTRY_AUTH_ENABLED=true` is in env (`command_run "env | grep AGENTRY_AUTH"`), the authproxy sidecar handles login/signup/OAuth — read `skills/auth/SKILL.md` before touching auth code; do NOT install `next-auth`, `lucia`, or `better-auth`. If auth is NOT enabled and the user explicitly wants login, then `lucia` or `next-auth` are reasonable picks.
 
 Don't pull in a UI kit (shadcn, MUI) unless the user asks — vanilla CSS or Tailwind covers most demos.
 
@@ -304,143 +327,22 @@ export async function listItems(limit = 50): Promise<Item[]> {
 {
   "name": "app",
   "type": "app",
-  "start_command": ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"],
+  "start_command": ["npm", "run", "dev"],
   "auto_restart": true,
   "env": { "NODE_ENV": "development" },
-  "health_check": { "port": 3000, "path": "/" }
+  "health_check": { "path": "/" }
 }
 ```
 
-## Services — what's available + how to wire them in
+## Services + data namespacing — read services.md
 
-Tell the user what they need to bind BEFORE writing data-access
-code. Then write code that reads env vars; never hardcode connection
-strings or API keys.
-
-| Service     | Env var(s)                                | Node SDK                 |
-|-------------|-------------------------------------------|--------------------------|
-| postgres    | `DATABASE_URL`                            | `postgres` or `drizzle`  |
-| mysql       | `DATABASE_URL`                            | `mysql2`                 |
-| mongodb     | `MONGODB_URL`                             | `mongodb`                |
-| redis       | `REDIS_URL`                               | `ioredis`                |
-| clickhouse  | `CLICKHOUSE_URL` etc.                     | `@clickhouse/client`     |
-| aws-s3      | `AWS_ACCESS_KEY_ID` etc.                  | `@aws-sdk/client-s3`     |
-| smtp        | `SMTP_HOST`, `SMTP_PORT` etc.             | `nodemailer`             |
-| stripe      | `STRIPE_SECRET_KEY`                       | `stripe`                 |
-| openai      | `OPENAI_API_KEY`                          | `openai`                 |
-| anthropic   | `ANTHROPIC_API_KEY`                       | `@anthropic-ai/sdk`      |
-
-Pattern, ALWAYS:
-1. `service_list` to confirm what the cluster has bindable.
-2. `service_bind(sandbox_id=..., service="postgres")` with the user's
-   real credentials.
-3. Read env vars in your code (`process.env.DATABASE_URL!`). Never
-   hardcode. Never inline secrets.
-4. Start the project (`project_start`) AFTER the bind so the shell
-   shim picks up the env on launch.
-
-## Sharing one service across many apps — namespace OR clobber
-
-The user binds ONE mongo / postgres / redis / s3 per cluster. Every
-sandbox AND every deployed app inherits the SAME credentials, which
-means the SAME data store. Two apps that both write to a collection
-called `users` will overwrite each other.
-
-**Rule: every app namespaces its writes under its own name. Never use
-default db names, default schemas, or bare collection / key names.**
-
-The platform stamps `AGENTRY_APP_NAME` into every app's env — the
-deployment slug in prod, the sandbox id in dev. Read it; don't
-override it. The fallback `?? "dev"` exists so a brand-new sandbox
-boots without crashing, NOT so apps share a "dev" namespace by
-accident.
-
-### MongoDB
-
-DON'T:
-
-```ts
-const db = client.db();              // empty → "test" DB or worse
-const db = client.db("appdb");       // shared across every app
-```
-
-DO:
-
-```ts
-const dbName = process.env.AGENTRY_APP_NAME ?? "dev";
-const db = client.db(dbName);
-// optional: assert at boot that we got a real name
-if (process.env.NODE_ENV === "production" && dbName === "dev") {
-  throw new Error("AGENTRY_APP_NAME must be set in production");
-}
-```
-
-### Postgres / MySQL
-
-Use a per-app schema. Create it at boot, then set `search_path`:
-
-```ts
-const ns = process.env.AGENTRY_APP_NAME ?? "dev";
-// Run once at boot. CREATE IF NOT EXISTS is idempotent + safe to
-// re-run, so you don't need a separate migration step for it.
-await sql`CREATE SCHEMA IF NOT EXISTS ${sql(ns)}`;
-await sql`SET search_path TO ${sql(ns)}, public`;
-// Every CREATE TABLE / SELECT now lands inside the per-app schema.
-```
-
-If you can't make schemas work (some managed Postgres tiers restrict
-DDL), prefix table names instead: `${ns}_users`, `${ns}_sessions`.
-
-### Redis
-
-Prefix every key with the app namespace. A tiny helper keeps it
-unmissable at the call site:
-
-```ts
-const ns = process.env.AGENTRY_APP_NAME ?? "dev";
-const k = (suffix: string) => `${ns}:${suffix}`;
-
-await redis.set(k(`session:${id}`), token);
-await redis.zadd(k("leaderboard"), score, userId);
-```
-
-### S3 / object storage
-
-Every object key gets the app prefix; the bucket is shared:
-
-```ts
-const prefix = process.env.AGENTRY_APP_NAME ?? "dev";
-await s3.send(new PutObjectCommand({
-  Bucket: process.env.AWS_S3_BUCKET!,
-  Key: `${prefix}/uploads/${file}`,
-  Body,
-}));
-```
-
-When listing, scope to the prefix:
-
-```ts
-const out = await s3.send(new ListObjectsV2Command({
-  Bucket, Prefix: `${prefix}/`,
-}));
-```
-
-### ClickHouse
-
-Same idea as Mongo: pick the DATABASE explicitly.
-
-```ts
-const database = process.env.AGENTRY_APP_NAME ?? "dev";
-const client = createClient({ url: process.env.CLICKHOUSE_URL!, database });
-// CREATE DATABASE IF NOT EXISTS at boot, then create tables inside it.
-```
-
-### Exception: services that already namespace by API key
-
-Stripe, OpenAI, Anthropic, SMTP — the user's KEY is the namespace.
-Two apps sharing the same Stripe key share the same customer ledger,
-so apps using these services should ask the user for a SEPARATE key
-per app rather than trying to multiplex one key across many apps.
+`docs_read("services")` for the binding table (which env vars each
+service exposes), the ALWAYS-pattern (`service_list` → `service_bind`
+→ read env → `project_start`), and the per-service namespacing
+recipes (`AGENTRY_APP_NAME` as mongo db / postgres schema / redis
+key prefix / s3 key prefix). Every app that touches a shared service
+MUST namespace its writes — two apps writing a bare `users`
+collection clobber each other.
 
 ## Recipe — end-to-end
 
@@ -483,8 +385,10 @@ Do these in order. **Don't skip step 0.**
 5. `command_run "cd /workspace/projects/app && npm install"` (takes
    ~30-60 s on a cold cache).
 
-6. **Update the manifest** — confirm `.sandbox-project.json`'s
-   `start_command` and `health_check.port` match.
+6. **Leave the manifest alone** — `project_create` scaffolded the
+   right `start_command`. Don't add `--port`/`--hostname` flags and
+   don't add a `health_check` block (if you do add one, its `port`
+   field is required by the schema).
 
 7. `project_start` — starts Next.js dev server with auto-restart.
 
@@ -521,16 +425,20 @@ Do these in order. **Don't skip step 0.**
         file_write the fix
       - DB connection refused → did you bind the service? service_bind
         first, then project_restart.
-      - Port 3000 in use → kill the stray process; don't pick a
-        different port (the deploy pipeline expects 3000).
+      - Port in use → FIRST check whether the holder is the agentry
+        auth sidecar (`authproxy` in `ss -tlnp` output). If it is,
+        that's the platform working as designed — your app must read
+        $PORT instead of hard-coding (CONTRACT.md rule 1). Only kill
+        processes YOU started; never pick a different port (the
+        deploy pipeline expects the standard one).
       Then `project_restart` and go back to step (a).
 
    e. Stop the loop when (a)+(b)+(c) all pass: row `running healthy`,
       logs show "Ready in Xms" / "✓ Compiled successfully" / no
       errors, curl returns 200 with HTML. ONLY THEN move to step 9.
 
-9. Tell the user how to access the app. Per the access-from-browser
-   recipe in the parent server-instructions block, hand them either:
+9. Tell the user how to access the app (the DONE protocol). Hand
+   them either:
    - "Click Share in the dashboard's Shared ports panel on port 3000"
      for a quick preview link, or
    - "Click Deploy to ship a prod build with a durable URL."
@@ -566,130 +474,14 @@ those three checks fail, you haven't finished — keep going.
 - **One file, one component** — `page.tsx` for the route; everything
   else in `components/`. Hard cap ~100 lines.
 
-## Running behind the bridge — the rules apps trip on
+## Running behind the bridge — read bridge.md
 
-Whether the user opens your app via a **Share link** (preview) or
-**Deploy** (durable URL), the app is reachable through the agentry
-bridge at `https://<name>.agentry.run`. The bridge terminates TLS at
-the edge and forwards plain HTTP to your container. That introduces
-four classes of bugs apps written for "I'll just run it on localhost"
-have. Bake these in from day one or you'll spend an hour debugging
-why "the cookies don't stick" or "the OAuth redirect goes to
-localhost:3000".
-
-### 1. Bind to 0.0.0.0, not localhost.
-
-The runtime can't see a server bound to `127.0.0.1`. The default
-manifest already does `--hostname 0.0.0.0`. Don't change it. Same for
-`next start` in the production image — pass `-H 0.0.0.0`. Same for
-any other server you start (express, fastify, gunicorn, …).
-
-### 2. Trust the forwarded headers.
-
-The browser sees `https://your-app.agentry.run`. Your app sees
-`http://0.0.0.0:3000`. To bridge that gap the bridge stamps:
-
-- `X-Forwarded-Proto: https`
-- `X-Forwarded-Host: your-app.agentry.run`
-- `X-Forwarded-For: <client ip>`
-
-Read these — never `req.host` / `req.protocol` directly — whenever
-you need to know the public URL of THIS request.
-
-**Next.js (App Router):**
-
-```ts
-// src/lib/url.ts
-import { headers } from "next/headers";
-
-export async function publicBaseURL(): Promise<string> {
-  const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  return `${proto}://${host}`;
-}
-```
-
-Use it any time you build an absolute URL: OAuth callbacks, email
-links, social-share preview cards, payment-provider return URLs, sitemap
-entries, Open Graph tags. NEVER paste `http://localhost:3000` into
-generated HTML or emails.
-
-**Express / fastify**: `app.set("trust proxy", 1)` once at boot;
-then `req.protocol`, `req.hostname` reflect the forwarded values.
-
-### 3. Cookies — Secure, SameSite, no Domain.
-
-The browser sees the app over HTTPS, so:
-
-- `Secure: true` is REQUIRED on session/auth cookies. Without it the
-  browser drops them on the first navigation.
-- `SameSite: "lax"` is the right default — works with normal
-  navigation and OAuth redirects. `"strict"` breaks OAuth callbacks
-  (the redirect counts as cross-site). `"none"` requires Secure
-  anyway, and you only need it for cross-origin iframes (rare).
-- `HttpOnly: true` for anything sensitive (session id, auth token).
-- DO NOT set a `Domain` attribute. Let the browser scope the cookie
-  to `<name>.agentry.run`. Setting `Domain=.agentry.run` is illegal
-  cross-tenant and will be rejected; setting `Domain=localhost` won't
-  match the deploy URL.
-
-Next.js example:
-
-```ts
-import { cookies } from "next/headers";
-
-(await cookies()).set("sid", sessionToken, {
-  httpOnly: true,
-  secure: true,
-  sameSite: "lax",
-  path: "/",
-  maxAge: 60 * 60 * 24 * 7,
-});
-```
-
-If you're using `next-auth` / Auth.js, set `AUTH_TRUST_HOST=true` in
-the deploy env. Otherwise it'll refuse to set cookies because the
-host isn't on its allow-list.
-
-### 4. Don't hardcode the URL.
-
-Common offenders:
-
-- `NEXTAUTH_URL=http://localhost:3000` baked into `.env` →
-  authentication redirects loop back to localhost in prod.
-- Stripe `success_url: "http://localhost:3000/thanks"` → user lands
-  on a dead page after checkout.
-- OAuth provider's allowed-callback list pinned to localhost → prod
-  rejects with `redirect_uri_mismatch`.
-
-The fix: compute these from `publicBaseURL()` (or the equivalent in
-your framework), and set the corresponding env var in the deploy
-form when you can't compute it.
-
-`process.env.NEXT_PUBLIC_APP_URL` is the conventional name we use —
-set it in the deploy env editor to the public URL once the deploy
-URL is known. Code reads `process.env.NEXT_PUBLIC_APP_URL ?? await
-publicBaseURL()` and is correct in both modes.
-
-### 5. WebSockets, streaming, long requests — all fine.
-
-The bridge proxies WebSockets and chunked / streaming responses
-unchanged. Server-Sent Events work. Long-polling works. You don't
-need anything special; if a request would have worked on localhost,
-it works through the bridge.
-
-### Sanity check before telling the user "it's live"
-
-After the deploy goes green:
-
-```
-curl -sI https://<name>.agentry.run/
-```
-
-Expect a 200 (or 3xx that lands on a 200). If you get a redirect to
-`http://localhost:3000/...` — you violated rule #2 or #4 above; fix
-the code, redeploy.
+`docs_read("bridge")` for the four URL/cookie classes of bugs every
+app hits behind the preview/deploy proxy: bind 0.0.0.0, trust
+`x-forwarded-*` headers for absolute URLs, cookie attributes
+(Secure + SameSite=Lax + NO Domain), and never hardcoding
+localhost URLs. Plus the `curl -sI` sanity check before declaring
+the app live. Applies to every project kind, not just Next.js.
 
 ## Common pitfalls
 

@@ -3,6 +3,11 @@
 For workers, scrapers, batch jobs, polling loops — any Python
 process that runs continuously but doesn't bind a public port.
 
+**Prerequisite: `docs_read("CONTRACT")` — especially rule 3 (bind
+services before coding against them) and rule 5 (report platform
+problems, don't patch around them).** Observe the running process
+with `project_logs` (same tool as every other kind).
+
 ## Lifecycle (don't skip)
 
 ```

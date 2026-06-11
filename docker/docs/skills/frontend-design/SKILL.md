@@ -6,6 +6,13 @@ license: Apache 2.0
 
 This skill guides creation of distinctive, production-grade frontend interfaces that avoid generic "AI slop" aesthetics. Implement real working code with exceptional attention to aesthetic details and creative choices.
 
+**This is the ENTRY POINT of the design chain. The order is:**
+1. **Direction** (this file) — pick an extreme aesthetic tone and commit.
+2. **Palette/language** — EITHER a tuned palette from `../theme-factory/themes/<name>.md` (10 presets) OR a named visual language from `../theme-factory/styles-catalog.md` (50+, when the user names one or the tone demands stronger commitment).
+3. **Brand** — `../brand-guidelines/SKILL.md` REFINES the chosen direction into reusable tokens; it never overrides step 1.
+
+Do these in order, once, before the first line of CSS/JSX. Don't loop back to step 1 after brand tokens exist — that's a redesign, which only the user can request.
+
 The user provides frontend requirements: a component, page, application, or interface to build. They may include context about the purpose, audience, or technical constraints.
 
 ## Design thinking

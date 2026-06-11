@@ -46,7 +46,9 @@ func Register(server *mcp.Server, c *Client) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_create",
 		Description: "Spin up a fresh isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id` (the ACTUAL allocated id — may differ from what you asked for; see below), `bindings` (services the operator has pre-wired into this sandbox — each entry lists the env var names you read at runtime), and `env` (NAMES of additional env vars / secrets already loaded in the sandbox; values are never returned). " +
-			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ BOTH the `bindings` AND `env` arrays from the RESPONSE before deciding any service or credential is missing. If a service is in `bindings`, your code reads the listed env vars verbatim — DO NOT bind it again, DO NOT spin up an in-process substitute. If a name like `JIRA_TOKEN` / `SLACK_BOT_TOKEN` / `STRIPE_SECRET_KEY` is in `env`, the value is already in process.env inside the sandbox — DO NOT ask the user to provide it, DO NOT prompt for it, just use it. When the user names a service by name (\"jira\", \"slack\", \"stripe\", \"openai\", …) ALWAYS scan both arrays for a matching token BEFORE saying it isn't configured. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
+			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ BOTH the `bindings` AND `env` arrays from the RESPONSE before deciding any service or credential is missing. If a service is in `bindings`, your code reads the listed env vars verbatim — DO NOT bind it again, DO NOT spin up an in-process substitute. If a name like `JIRA_TOKEN` / `SLACK_BOT_TOKEN` / `STRIPE_SECRET_KEY` is in `env`, the value is already in process.env inside the sandbox — DO NOT ask the user to provide it, DO NOT prompt for it, just use it. When the user names a service by name (\"jira\", \"slack\", \"stripe\", \"openai\", …) ALWAYS scan both arrays for a matching token BEFORE saying it isn't configured. " +
+			"If `AGENTRY_AUTH_ENABLED` is in the `env` array, login/signup are wired by the authproxy sidecar — your app reads `x-forwarded-user/email/name/provider` headers and DOES NOT install next-auth, lucia, better-auth, or render its own /login page. Read skills/auth/SKILL.md before any auth-shaped UI. " +
+			"(2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
 			"Pass any descriptive `sandbox_id` (e.g. \"ecommerce-store\"). If that name is already taken by an unrelated sandbox, the server auto-allocates a fresh suffixed name (e.g. \"ecommerce-store-7f2a\") so you DON'T overwrite the existing one. " +
 			"ALWAYS use the `sandbox_id` from the RESPONSE for every follow-up tool call in this conversation — never the one you passed in. " +
 			"Set `reuse_existing: true` only when you genuinely want to attach to an existing sandbox by name (rare; typical use case is a CLI `attach` flow, not an LLM creating a new project).",
@@ -89,10 +91,11 @@ func Register(server *mcp.Server, c *Client) {
 	//
 	// (Build + deploy tools removed. Deploy lives in the dashboard
 	// today; the LLM should tell the user to click Share for a quick
-	// dev preview or Deploy for a durable prod URL — see the
-	// server-instructions "access from the user's browser" block. A
-	// fresh MCP-driven deploy tool will land once we have a token-
-	// auth path from the MCP client to agentry-app.)
+	// dev preview or Deploy for a durable prod URL — that guidance
+	// lives in the server-instructions "DONE = SHARE INSTRUCTIONS"
+	// block in server.go. A fresh MCP-driven deploy tool will land
+	// once we have a token-auth path from the MCP client to
+	// agentry-app.)
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "command_run",
 		Description: "Run a BLOCKING shell command and wait for stdout/exit_code. Reuse `session_id` across calls for a persistent bash PTY (keeps cwd/env). " +
@@ -143,6 +146,7 @@ func Register(server *mcp.Server, c *Client) {
 		Name: "docs_read",
 		Description: "Read a baked-in operator cheat-sheet from /etc/sandbox/docs/. PREFER this over file_read or command_run (`cat`, `find`) when reaching for a doc — the docs are INSIDE the sandbox container, NOT on your host. NEVER run `find /` to locate them.\n\n" +
 			"Available names (you can omit the .md suffix):\n" +
+			"  • CONTRACT                               — the five invariants for EVERY kind (ports, services, auth, platform boundaries); read before coding\n" +
 			"  • README                                 — the recipe router (read first)\n" +
 			"  • coding-style                           — house code rules\n" +
 			"  • projects                               — project manifest schema\n" +
@@ -151,6 +155,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • streamlit                              — Streamlit recipe\n" +
 			"  • fastapi                                — FastAPI recipe\n" +
 			"  • python-script                          — long-running Python recipe\n" +
+			"  • bridge                                 — URL/cookie/origin rules behind the preview proxy (all kinds)\n" +
+			"  • services                               — service binding table + data-namespacing patterns (all kinds)\n" +
 			"  • skills/frontend-design                 — design principles; READ before any CSS/HTML/JSX\n" +
 			"  • skills/frontend-design/references/ai-tells     — AI-slop patterns to refuse\n" +
 			"  • skills/frontend-design/references/design-rules — hard typographic/color rules\n" +
@@ -160,7 +166,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • skills/brand-guidelines                — brand consistency\n" +
 			"  • skills/webapp-testing                  — Playwright + screenshot testing\n" +
 			"  • skills/web-artifacts-builder           — single-file HTML artifacts\n" +
-			"  • skills/github                          — work on existing GitHub repos (precondition: GITHUB_TOKEN in env)",
+			"  • skills/github                          — work on existing GitHub repos (precondition: GITHUB_TOKEN in env)\n" +
+			"  • skills/auth                            — login / signup wired by the authproxy sidecar (precondition: AGENTRY_AUTH_ENABLED=true in env; your app reads x-forwarded-* headers and DOES NOT install next-auth / lucia / better-auth)",
 	}, docsRead(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_grep",
@@ -206,7 +213,8 @@ func Register(server *mcp.Server, c *Client) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "project_start",
 		Description: "Start the sandbox's managed project. Reads `/workspace/projects/<name>/.sandbox-project.json` (scaffolded by `project_create`). `restart=true` stop+starts. " +
-			"DEFAULT this over command_start for any server the user will touch more than once — bare command_start doesn't get auto-restart, port discovery, or log capture.",
+			"DEFAULT this over command_start for any server the user will touch more than once — bare command_start doesn't get auto-restart, port discovery, or log capture. " +
+			"PORT DISCIPLINE: your app must bind to `$PORT` from the runtime — never hard-code `--port N` in `start_command`. When `AGENTRY_AUTH_ENABLED=true` the authproxy sidecar binds the public port (3000) and your process gets `PORT=3001`. Hard-coding `--port 3000` causes `address already in use` because authproxy is already there. Login UI is at `/auth/login` (or `/auth/signin` alias); your app reads `x-forwarded-*` headers — don't install next-auth / lucia / better-auth.",
 	}, projectStart(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "project_stop",
