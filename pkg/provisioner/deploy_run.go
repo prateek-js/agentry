@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // Deploy run + proxy endpoints — the cluster target's runtime side.
@@ -98,10 +99,12 @@ const (
 
 	// deployStartTimeout is how long the provisioner waits for the
 	// deployed app to bind AgentryDeployPort before declaring the
-	// deploy failed and reaping the container. 60s is enough for
-	// every common cold-start: Node module load, Python import +
-	// uvicorn boot, Streamlit's slow CLI parse.
-	deployStartTimeout = 60 * time.Second
+	// deploy failed and reaping the container. 120s covers the slow
+	// cold-starts 60s used to clip: a big Next.js standalone server,
+	// a Java/Spring boot, a Python app with heavy ML imports. The
+	// median deploy still completes in ~300-400ms; this only changes
+	// how long we wait before giving up on a genuinely stuck app.
+	deployStartTimeout = 120 * time.Second
 )
 
 func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request) {
@@ -197,13 +200,21 @@ func (p *Provisioner) handleDeploymentRun(w http.ResponseWriter, r *http.Request
 	// the failure surfaces hours later as "connection refused" with no
 	// clue why. Polling a TCP connect is the cheapest reliable signal.
 	if waitErr := waitForDeploymentPort(ctx, dockerCli, created.ID, AgentryDeployPort, deployStartTimeout); waitErr != nil {
+		// Grab the container's logs BEFORE reaping it — they're the
+		// single most useful thing for diagnosing a healthgate failure
+		// (DB connection refused, missing env, a crash on boot). Without
+		// this the operator saw only "didn't bind PORT" and had to SSH
+		// into the provisioner to find out why.
+		logs := containerLogTail(context.Background(), dockerCli, created.ID, 60)
 		// Reap so we don't leave a broken container running + retrying.
-		// The user gets a clear error; they redeploy after fixing.
 		_ = dockerCli.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
 		log.Printf("deploy-run: id=%s healthgate failed: %v", req.ID, waitErr)
-		writeError(w, http.StatusBadGateway,
-			fmt.Sprintf("deployment didn't bind PORT=%d within %s: %v.\n\nagentry deployments must read PORT from env and listen on it. railpack's templates do this automatically; for kind=custom images, your CMD must honor $PORT.",
-				AgentryDeployPort, deployStartTimeout, waitErr))
+		msg := fmt.Sprintf("deployment didn't bind PORT=%d within %s: %v.\n\nagentry deployments must read PORT from env and listen on it. railpack's templates do this automatically; for kind=custom images, your CMD must honor $PORT.",
+			AgentryDeployPort, deployStartTimeout, waitErr)
+		if logs != "" {
+			msg += "\n\n--- container logs (last lines) ---\n" + logs
+		}
+		writeError(w, http.StatusBadGateway, msg)
 		return
 	}
 
@@ -262,6 +273,90 @@ func waitForDeploymentPort(ctx context.Context, dockerCli *dockerclient.Client, 
 		}
 	}
 	return fmt.Errorf("timeout: no listener on %s:%d (last container_ip=%q)", "container", port, ip)
+}
+
+// containerLogTail returns the last `lines` lines of a container's
+// combined stdout+stderr as plain text. Docker multiplexes the two
+// streams with an 8-byte frame header per chunk when the container has
+// no TTY (ours don't — authproxy is the entrypoint), so we demux with
+// stdcopy. Best-effort: any error yields "" so callers can fold it
+// into a larger message without branching. Capped to keep the error
+// payload bounded.
+func containerLogTail(ctx context.Context, cli *dockerclient.Client, containerID string, lines int) string {
+	if lines <= 0 {
+		lines = 50
+	}
+	rc, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       strconv.Itoa(lines),
+	})
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	var out, errBuf strings.Builder
+	// stdcopy writes stdout + stderr into the two writers, stripping the
+	// frame headers. We interleave them into a single string; ordering
+	// across the two streams isn't preserved but each stream stays
+	// in-order, which is what matters for reading a crash trace.
+	if _, derr := stdcopy.StdCopy(&out, &errBuf, io.LimitReader(rc, 256*1024)); derr != nil {
+		// A demux error usually means a TTY container (raw stream). Fall
+		// back to returning whatever we read raw.
+		return strings.TrimSpace(out.String() + errBuf.String())
+	}
+	combined := out.String() + errBuf.String()
+	return strings.TrimSpace(tailLines(combined, lines))
+}
+
+// tailLines returns the last n lines of s.
+func tailLines(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	ls := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(ls) <= n {
+		return s
+	}
+	return strings.Join(ls[len(ls)-n:], "\n")
+}
+
+// handleDeploymentLogs streams the last N lines of a deployment
+// container's logs. GET /api/deployments/{id}/logs?lines=200. The
+// control plane proxies this through the bridge to the Deployment
+// detail page so a failed/crashing deploy is diagnosable from the
+// dashboard instead of an SSH session.
+func (p *Provisioner) handleDeploymentLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "deployment id missing")
+		return
+	}
+	dockerCli, err := p.docker()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "docker client unavailable: "+err.Error())
+		return
+	}
+	lines := 200
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 2000 {
+			lines = n
+		}
+	}
+	containerName := deploymentContainerPrefix + id
+	// Confirm the container exists first so a missing deployment is a
+	// clean 404 rather than an opaque docker error.
+	info, ierr := dockerCli.ContainerInspect(r.Context(), containerName)
+	if ierr != nil {
+		writeError(w, http.StatusNotFound, "deployment container not found (it may have failed its healthgate and been reaped)")
+		return
+	}
+	logs := containerLogTail(r.Context(), dockerCli, containerName, lines)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":     id,
+		"status": info.State.Status,
+		"logs":   logs,
+	})
 }
 
 func (p *Provisioner) handleDeploymentGet(w http.ResponseWriter, r *http.Request) {

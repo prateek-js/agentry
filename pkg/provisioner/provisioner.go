@@ -369,6 +369,7 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// the bridge via the deployment proxy below.
 	mux.HandleFunc("POST /api/deployments", p.handleDeploymentRun)
 	mux.HandleFunc("GET /api/deployments/{id}", p.handleDeploymentGet)
+	mux.HandleFunc("GET /api/deployments/{id}/logs", p.handleDeploymentLogs)
 	mux.HandleFunc("DELETE /api/deployments/{id}", p.handleDeploymentStop)
 	mux.HandleFunc("/api/deployments/{id}/proxy/{rest...}", p.handleDeploymentProxy)
 
@@ -383,6 +384,13 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// don't leak into chat context). Listed by name only.
 	mux.HandleFunc("POST /api/sandboxes/{id}/secrets", p.handleSecretSet)
 	mux.HandleFunc("GET /api/sandboxes/{id}/secrets", p.handleSecretList)
+
+	// Garbage collection — intentional, operator-reviewed. Candidates is
+	// read-only; the POST removes only the reviewed ids and re-validates
+	// each against the reclaimable set first. Surfaced on the dashboard's
+	// server detail page.
+	mux.HandleFunc("GET /api/gc/candidates", p.handleGCCandidates)
+	mux.HandleFunc("POST /api/gc", p.handleGC)
 
 	// Catch-all reverse-proxy: /api/sandboxes/{id}/runtime/* forwards
 	// to the named sandbox's runtime. This is what makes runtime

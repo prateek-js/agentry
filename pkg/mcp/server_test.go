@@ -191,13 +191,15 @@ func TestServerListsExpectedTools(t *testing.T) {
 		"project_create", "project_start", "project_stop", "project_list", "project_logs",
 		// Code interpreter (Jupyter)
 		"code_exec", "code_close",
+		// Observability probes + deployment status
+		"app_probe", "service_probe", "deployment_status",
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing tool %q", want)
 		}
 	}
-	if len(got) != 26 {
-		t.Errorf("tool count = %d; want 26 (dropped agentry_auth_setup — auth is now CLI-driven via `agentry auth enable`)", len(got))
+	if len(got) != 29 {
+		t.Errorf("tool count = %d; want 29 (26 + app_probe + service_probe + deployment_status)", len(got))
 	}
 }
 

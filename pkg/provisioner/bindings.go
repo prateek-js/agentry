@@ -171,7 +171,7 @@ func (p *Provisioner) runtimeListDir(ctx context.Context, sandboxID, path string
 	if p.config.RuntimeAPIKey != "" {
 		req.Header.Set("X-Sandbox-API-Key", p.config.RuntimeAPIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sandboxHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

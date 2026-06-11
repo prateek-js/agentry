@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,15 @@ type Client struct {
 	// error logs but does NOT fail the create — partial wiring is
 	// better than no sandbox at all.
 	PostCreateHook func(ctx context.Context, info SandboxInfo) error
+
+	// DeploymentStatusHook, if set, backs the `deployment_status` MCP
+	// tool. It's injected by `agentry mcp` and reaches the control plane
+	// over the laptop's PAT (the MCP client's own transport only reaches
+	// the sandbox runtime, never agentry-app). Given a sandbox id it
+	// returns that sandbox's deployments. Nil when the binary has no
+	// control-plane auth — the tool then tells the user to use the
+	// dashboard instead of erroring.
+	DeploymentStatusHook func(ctx context.Context, sandboxID string) (any, error)
 
 	// lastSandboxURL caches the URL of the most recently created
 	// sandbox in this MCP session. Every file/command/project/port
@@ -71,6 +82,10 @@ type Config struct {
 	// PostCreateHook is invoked from sandboxCreate after the create
 	// succeeds. See Client.PostCreateHook for semantics.
 	PostCreateHook func(ctx context.Context, info SandboxInfo) error
+
+	// DeploymentStatusHook backs the deployment_status tool. See
+	// Client.DeploymentStatusHook for semantics.
+	DeploymentStatusHook func(ctx context.Context, sandboxID string) (any, error)
 }
 
 // NewClient builds a Client. Empty ProvisionerURL is fine — sandbox_*
@@ -81,10 +96,11 @@ func NewClient(cfg Config) *Client {
 		hc = &http.Client{Timeout: DefaultTimeout}
 	}
 	return &Client{
-		provisionerURL: strings.TrimRight(cfg.ProvisionerURL, "/"),
-		httpClient:     hc,
-		apiKey:         cfg.APIKey,
-		PostCreateHook: cfg.PostCreateHook,
+		provisionerURL:       strings.TrimRight(cfg.ProvisionerURL, "/"),
+		httpClient:           hc,
+		apiKey:               cfg.APIKey,
+		PostCreateHook:       cfg.PostCreateHook,
+		DeploymentStatusHook: cfg.DeploymentStatusHook,
 	}
 }
 
@@ -529,9 +545,18 @@ func (c *Client) ProjectList(ctx context.Context, sandboxURL string) (map[string
 	return out, err
 }
 
-func (c *Client) ProjectLogs(ctx context.Context, sandboxURL, name string) (map[string]any, error) {
+// ProjectLogs fetches the recent log buffer for a managed project. When
+// lines > 0 it asks the runtime for that many lines (the runtime caps
+// the buffer); 0 leaves the runtime default (100). Returns the raw
+// response envelope — the MCP layer pulls data.lines and applies any
+// client-side grep filtering.
+func (c *Client) ProjectLogs(ctx context.Context, sandboxURL, name string, lines int) (map[string]any, error) {
 	var out map[string]any
-	err := c.do(ctx, http.MethodGet, sandboxURL+"/v1/project/logs?name="+name, nil, &out)
+	u := sandboxURL + "/v1/project/logs?name=" + url.QueryEscape(name)
+	if lines > 0 {
+		u += "&lines=" + strconv.Itoa(lines)
+	}
+	err := c.do(ctx, http.MethodGet, u, nil, &out)
 	return out, err
 }
 

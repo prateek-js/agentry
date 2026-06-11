@@ -289,6 +289,12 @@ func cmdMCP(_ []string) int {
 			applyClusterDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
 			applyClusterEnvDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
 		),
+		// deployment_status reads the control plane over the laptop's
+		// PAT — a different origin than the tunnel above. Only wire it
+		// when the laptop is actually logged in; otherwise leave it nil
+		// so the tool points the user at the dashboard rather than
+		// erroring on a missing token every call.
+		DeploymentStatusHook: deploymentStatusHookIfAvailable(cfg),
 	})
 
 	// Watchdogs around the stdio loop. Two failure modes we've seen

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -357,6 +358,15 @@ func (pm *ProjectManager) healthCheckLoop(proj *Project) {
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
+	// One client for the whole loop, not one per tick. A fresh
+	// http.Client every interval means a fresh Transport every interval —
+	// no connection reuse, and the old Transport's idle conns linger
+	// until GC. The timeout is fixed per project, so the client is
+	// constant; hoist it. CloseIdleConnections on exit so a stopped
+	// project doesn't leave a keep-alive socket to its own dead port.
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	defer client.CloseIdleConnections()
+
 	for range ticker.C {
 		proj.mu.Lock()
 		if proj.status != "running" {
@@ -367,9 +377,10 @@ func (pm *ProjectManager) healthCheckLoop(proj *Project) {
 		proj.mu.Unlock()
 
 		url := fmt.Sprintf("http://127.0.0.1:%d%s", port, hc.Path)
-		client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 		resp, err := client.Get(url)
 
+		// Short-circuit guards the nil resp: when err != nil, the
+		// StatusCode term is never evaluated.
 		if err != nil || resp.StatusCode >= 500 {
 			failures++
 			if failures >= retries {
@@ -384,6 +395,10 @@ func (pm *ProjectManager) healthCheckLoop(proj *Project) {
 			proj.mu.Unlock()
 		}
 		if resp != nil {
+			// Drain before close so the keep-alive connection goes back
+			// to the pool instead of being dropped (a health probe's body
+			// is tiny — a status page or empty 200).
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
 	}
@@ -462,7 +477,7 @@ func (pm *ProjectManager) ListProjects() []models.ProjectStatus {
 		var ports []int
 		if proj.status == "running" {
 			uptime = time.Since(proj.startedAt).Round(time.Second).String()
-			ports = filterInternalPort(portsForPGID(proj.pid), proj.internalPort)
+			ports = filterInternalPort(portsForPGIDCached(proj.pid), proj.internalPort)
 		}
 		result = append(result, models.ProjectStatus{
 			Name:         proj.config.Name,
@@ -503,7 +518,19 @@ func (pm *ProjectManager) GetLogs(name string, lines int) ([]string, error) {
 	return result, nil
 }
 
-// AutoStartProjects starts all projects with auto_restart=true.
+// autoStartConcurrency bounds how many projects boot at once in
+// AutoStartProjects. One-project-per-sandbox makes this usually moot,
+// but a stack can carry several auto_restart projects — and each
+// StartProject forks a build/runtime process. Firing all of them at
+// once would spike CPU on a fresh sandbox and let unrelated builds
+// thrash the disk cache; 4 keeps boot parallel without a thundering
+// herd.
+const autoStartConcurrency = 4
+
+// AutoStartProjects starts all projects with auto_restart=true, bounded
+// to autoStartConcurrency concurrent starts. Still returns immediately
+// — the wait happens inside the spawned goroutine so server boot isn't
+// blocked on app builds.
 func (pm *ProjectManager) AutoStartProjects() {
 	projectsDir := filepath.Join(pm.workDir, "projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -511,6 +538,9 @@ func (pm *ProjectManager) AutoStartProjects() {
 		return
 	}
 
+	// Collect the names first so the semaphore goroutine owns the whole
+	// fan-out and the caller (server boot) returns without blocking.
+	var names []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -525,13 +555,29 @@ func (pm *ProjectManager) AutoStartProjects() {
 			continue
 		}
 		if config.AutoRestart {
+			names = append(names, entry.Name())
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+
+	go func() {
+		sem := make(chan struct{}, autoStartConcurrency)
+		var wg sync.WaitGroup
+		for _, name := range names {
+			wg.Add(1)
+			sem <- struct{}{}
 			go func(name string) {
+				defer wg.Done()
+				defer func() { <-sem }()
 				if _, err := pm.StartProject(name); err != nil {
 					fmt.Fprintf(os.Stderr, "auto-start failed for %s: %v\n", name, err)
 				}
-			}(entry.Name())
+			}(name)
 		}
-	}
+		wg.Wait()
+	}()
 }
 
 // ── HTTP Handlers ─────────────────────────────────────────────────────────
@@ -564,7 +610,7 @@ func ProjectStartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Unlock()
 		if status.Status == "running" {
-			status.Ports = filterInternalPort(portsForPGID(pid), internalPort)
+			status.Ports = filterInternalPort(portsForPGIDCached(pid), internalPort)
 		}
 		Success(w, fmt.Sprintf("project '%s' started", req.Name), status)
 	}
@@ -619,7 +665,7 @@ func ProjectRestartHandler(pm *ProjectManager) http.HandlerFunc {
 		}
 		proj.mu.Unlock()
 		if status.Status == "running" {
-			status.Ports = filterInternalPort(portsForPGID(pid), internalPort)
+			status.Ports = filterInternalPort(portsForPGIDCached(pid), internalPort)
 		}
 		Success(w, fmt.Sprintf("project '%s' restarted", req.Name), status)
 	}

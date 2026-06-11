@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -226,8 +227,10 @@ func Register(server *mcp.Server, c *Client) {
 			"Self-check: after declaring you're done, this should show every project running with non-empty ports.",
 	}, projectList(c))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "project_logs",
-		Description: "Recent log buffer (~500 lines) for a managed project. Stdout and stderr interleaved in order.",
+		Name: "project_logs",
+		Description: "Recent log buffer (~500 lines) for a managed project. Stdout and stderr interleaved in order. " +
+			"Filter before it hits your context: `grep` (case-insensitive RE2 regex) keeps only matching lines — pass 'error|panic|exception|traceback' to pull just the failures out of a noisy server log. `tail_lines` caps how many lines come back (default 200). " +
+			"When a project shows unhealthy in project_list, call this with grep='error|fail|panic' FIRST instead of reading the whole buffer.",
 	}, projectLogs(c))
 
 	// — Code interpreter (Jupyter) ──────────────────────────────────────
@@ -242,6 +245,12 @@ func Register(server *mcp.Server, c *Client) {
 		Name:        "code_close",
 		Description: "Shut down a kernel context and free its memory. Idempotent. Call when you're done with a context — each kernel is a real Python process.",
 	}, codeClose(c))
+
+	// — Observability (probe the running app + bound services) ───────────
+	registerProbeTools(server, c)
+
+	// — Deployment status (read-only window into the control plane) ──────
+	registerDeploymentStatusTool(server, c)
 }
 
 // --- arg structs ----------------------------------------------------------
@@ -397,6 +406,13 @@ type projectNameArgs struct {
 
 type sandboxURLOnlyArgs struct {
 	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+}
+
+type projectLogsArgs struct {
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	Name       string `json:"name" jsonschema:"project name (the directory under /workspace/projects containing .sandbox-project.json)"`
+	TailLines  int    `json:"tail_lines,omitempty" jsonschema:"return only the last N lines (after any grep filter). Default 200; the runtime buffer holds ~500. Use a small value (20-50) when you just want the latest error."`
+	Grep       string `json:"grep,omitempty" jsonschema:"RE2 regex; keep only log lines that match. Case-insensitive. Use to pull just the error/warn lines out of a noisy server log (e.g. 'error|panic|exception|traceback')."`
 }
 
 type codeExecArgs struct {
@@ -963,20 +979,94 @@ func projectList(c *Client) mcp.ToolHandlerFor[sandboxURLOnlyArgs, any] {
 	}
 }
 
-func projectLogs(c *Client) mcp.ToolHandlerFor[projectNameArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectNameArgs) (*mcp.CallToolResult, any, error) {
+func projectLogs(c *Client) mcp.ToolHandlerFor[projectLogsArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectLogsArgs) (*mcp.CallToolResult, any, error) {
 		if a.SandboxURL == "" {
 			a.SandboxURL = c.LastSandboxURL()
 		}
 		if a.SandboxURL == "" || a.Name == "" {
 			return errResult("sandbox_url and name are required"), nil, nil
 		}
-		out, err := c.ProjectLogs(ctx, a.SandboxURL, a.Name)
+		// Compile the grep up-front so a bad regex is a crisp tool error,
+		// not a silent no-op that returns the whole buffer.
+		var re *regexp.Regexp
+		if a.Grep != "" {
+			compiled, err := regexp.Compile("(?i)" + a.Grep)
+			if err != nil {
+				return errResult(fmt.Sprintf("grep is not a valid regex: %v", err)), nil, nil
+			}
+			re = compiled
+		}
+		// Ask the runtime for a generous buffer when we're going to grep
+		// (so the filter has material to work with), otherwise honor the
+		// caller's tail directly.
+		fetch := a.TailLines
+		if re != nil || fetch <= 0 {
+			fetch = 500
+		}
+		out, err := c.ProjectLogs(ctx, a.SandboxURL, a.Name, fetch)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		return jsonResult(out), out, nil
+		lines := extractLogLines(out)
+		if re != nil {
+			kept := lines[:0:0]
+			for _, ln := range lines {
+				if re.MatchString(ln) {
+					kept = append(kept, ln)
+				}
+			}
+			lines = kept
+		}
+		tail := a.TailLines
+		if tail <= 0 {
+			tail = 200
+		}
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+		result := map[string]any{
+			"name":           a.Name,
+			"lines":          lines,
+			"returned_lines": len(lines),
+		}
+		if re != nil {
+			result["grep"] = a.Grep
+		}
+		return jsonResult(result), result, nil
 	}
+}
+
+// extractLogLines pulls the []string log buffer out of the runtime's
+// project/logs envelope. The runtime nests it at data.lines; we also
+// accept a top-level lines key (defensive against envelope changes) and
+// coerce []any → []string. Returns an empty slice on any mismatch rather
+// than nil so downstream filtering/tailing is always safe.
+func extractLogLines(out map[string]any) []string {
+	pick := func(m map[string]any) ([]any, bool) {
+		if v, ok := m["lines"].([]any); ok {
+			return v, true
+		}
+		return nil, false
+	}
+	var raw []any
+	if data, ok := out["data"].(map[string]any); ok {
+		if v, ok := pick(data); ok {
+			raw = v
+		}
+	}
+	if raw == nil {
+		if v, ok := pick(out); ok {
+			raw = v
+		}
+	}
+	lines := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			lines = append(lines, s)
+		}
+	}
+	return lines
 }
 
 // --- code interpreter handlers ────────────────────────────────────────────
