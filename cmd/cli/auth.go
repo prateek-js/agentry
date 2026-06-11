@@ -35,13 +35,14 @@ const authUsage = `Usage:
   agentry auth providers add NAME       register an OAuth provider (google, github, …)
   agentry auth providers remove NAME    remove a provider
   agentry auth providers list           table of every provider on this profile
+  agentry auth sync                     re-stamp auth env on every running sandbox
 
 Auth state is per (cluster, profile). Switching profile via
 ` + "`agentry profile use`" + ` switches which auth posture sandboxes inherit.
 
-Prereq: ` + "`agentry auth enable`" + ` requires a postgres or mysql binding
-already in the profile (mongo support is coming in v2). Run
-` + "`agentry service bind postgres`" + ` first if you haven't.
+Prereq: ` + "`agentry auth enable`" + ` requires a postgres, mysql, or mongo
+binding already in the profile. Run ` + "`agentry service bind postgres`" + `
+(or mysql / mongodb) first if you haven't.
 
 Examples:
   agentry service bind postgres                  # supply DATABASE_URL
@@ -68,6 +69,8 @@ func cmdAuth(args []string) int {
 		return authStatus(args[1:])
 	case "providers", "provider":
 		return cmdAuthProviders(args[1:])
+	case "sync":
+		return authSync(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "agentry auth: unknown subcommand %q\n\n", args[0])
 		fmt.Fprint(os.Stderr, authUsage)
@@ -159,6 +162,10 @@ func authEnable(args []string) int {
 	fmt.Fprintln(os.Stderr, "  AGENTRY_AUTH_ENABLED=true")
 	fmt.Fprintln(os.Stderr, "  AGENTRY_AUTH_DB=<bind URL>")
 	fmt.Fprintln(os.Stderr, "  AGENTRY_AUTH_SECRET=<the secret minted above>")
+
+	// Also push to ALREADY-running sandboxes so the operator doesn't
+	// have to recreate them. Best-effort: logs but doesn't fail.
+	runAuthSyncForActiveProfile("enable")
 	return 0
 }
 
@@ -256,6 +263,10 @@ func authDisable(args []string) int {
 		return die("delete auth state: %v", err)
 	}
 	fmt.Printf("auth disabled on cluster %q (profile %q).\n", cfg.Cluster, profile)
+	// Wipe the core auth vars from already-running sandboxes so the
+	// sidecar drops back to passthrough mode without a sandbox
+	// recreate. Provider creds stay (see authEnvForState's note).
+	runAuthSyncForActiveProfile("disable")
 	return 0
 }
 
@@ -406,6 +417,7 @@ func authProviderAdd(args []string) int {
 	fmt.Printf("provider %s added on cluster %q (profile %q).\n", name, cfg.Cluster, profile)
 	fmt.Fprintln(os.Stderr, "\nNext: register the callback URL with the provider's console:")
 	fmt.Fprintf(os.Stderr, "  https://<deploy-url>/auth/%s/callback\n", name)
+	runAuthSyncForActiveProfile("providers add " + name)
 	return 0
 }
 
@@ -437,6 +449,7 @@ func authProviderRemove(args []string) int {
 		return die("save auth state: %v", err)
 	}
 	fmt.Printf("provider %s removed from cluster %q (profile %q).\n", name, cfg.Cluster, profile)
+	runAuthSyncForActiveProfile("providers remove " + name)
 	return 0
 }
 

@@ -398,13 +398,37 @@ func TestFitnessReport_DescribePointsAtFailedStep(t *testing.T) {
 	}
 }
 
-func TestFitnessMongo_AlwaysRefuses(t *testing.T) {
-	r := fitnessMongo("mongodb://host:27017")
-	if r.Err == nil {
-		t.Error("mongo fitness should refuse (not yet validated in v1)")
+func TestFitnessMongo_UnreachableHostFails(t *testing.T) {
+	// Skipped on CI without a mongo server; the dial against a
+	// non-resolvable host takes ~30s and we don't want that in unit
+	// runs. The real fitness path is exercised in the binary integration
+	// tests; here we just confirm an unreachable URL surfaces as an
+	// error, not a silent pass.
+	if testing.Short() {
+		t.Skip("skipping mongo fitness dial in -short mode")
 	}
-	if !strings.Contains(r.Err.Error(), "v1") {
-		t.Errorf("error should mention v1 status; got %v", r.Err)
+	r := fitnessMongo("mongodb://nonexistent.invalid:27017/agentry?serverSelectionTimeoutMS=1500&connectTimeoutMS=1500")
+	if r.Err == nil {
+		t.Error("expected unreachable mongo URL to surface an error")
+	}
+	if r.CanWrite {
+		t.Error("CanWrite should be false when the dial failed")
+	}
+}
+
+func TestDatabaseFromMongoURI(t *testing.T) {
+	cases := map[string]string{
+		"mongodb://h:27017":              "agentry",
+		"mongodb://h:27017/":             "agentry",
+		"mongodb://h:27017/myapp":        "myapp",
+		"mongodb://h:27017/myapp?w=1":    "myapp",
+		"mongodb+srv://h/auth?retry=1":   "auth",
+		"bogus":                          "agentry",
+	}
+	for in, want := range cases {
+		if got := databaseFromMongoURI(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
 	}
 }
 

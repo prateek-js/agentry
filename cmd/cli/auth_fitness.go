@@ -16,6 +16,10 @@ import (
 	// works for both postgres and mysql.
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // fitnessReport is the structured result of a DB connectivity test.
@@ -143,6 +147,10 @@ func fitnessPostgres(url string) fitnessReport {
 	if url == "" {
 		return fitnessReport{Err: fmt.Errorf("DATABASE_URL is empty in the postgres bind")}
 	}
+	// Self-heal: if the operator's stored URL has raw special chars
+	// in the userinfo (legacy binds from before url_repair landed),
+	// fix it on the fly so the fitness check works without a re-bind.
+	url = repairConnectionURL(url)
 	db, err := sql.Open("pgx", url)
 	if err != nil {
 		return fitnessReport{Err: fmt.Errorf("open: %w", err)}
@@ -162,6 +170,7 @@ func fitnessMySQL(url string) fitnessReport {
 	if url == "" {
 		return fitnessReport{Err: fmt.Errorf("DATABASE_URL is empty in the mysql bind")}
 	}
+	url = repairConnectionURL(url)
 	db, err := sql.Open("mysql", url)
 	if err != nil {
 		return fitnessReport{Err: fmt.Errorf("open: %w", err)}
@@ -174,20 +183,86 @@ func fitnessMySQL(url string) fitnessReport {
 	return runSQLFitness(ctx, db)
 }
 
-// fitnessMongo is currently a refusal — the sidecar's mongo adapter
-// isn't ready in v1 of the auth feature. We accept the catalog
-// binding for forward-compat so operators can `service bind
-// mongodb` without errors, but we won't sign off on the auth posture
-// until the mongo path is fully validated.
+// fitnessMongo runs the connect → insert → find → drop cascade on a
+// throwaway collection in the bound database. Same shape as
+// runSQLFitness so the report fields line up across families, just
+// translated to mongo operations.
 //
-// The refusal is intentional and explicit: silently "passing" with a
-// stub check would land operators with an auth feature that fails
-// later inside the sidecar — exactly the failure mode the fitness
-// check is meant to prevent.
-func fitnessMongo(url string) fitnessReport {
-	return fitnessReport{
-		Err: fmt.Errorf("mongo support for `agentry auth enable` is not yet validated in v1; bind postgres or mysql instead, or wait for the next release"),
+// Why this matters: a binding that points at a mongo instance the
+// sidecar can READ but not WRITE would let `agentry auth enable`
+// "succeed" yet have signup fail at first user. We catch that here
+// by writing a doc + deleting it inside the fitness window — same
+// posture the SQL adapter takes.
+func fitnessMongo(uri string) fitnessReport {
+	r := fitnessReport{}
+	uri = repairConnectionURL(uri)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		r.Err = fmt.Errorf("connect: %w", err)
+		return r
 	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	if err := client.Ping(ctx, nil); err != nil {
+		r.Err = fmt.Errorf("ping: %w", err)
+		return r
+	}
+	r.CanConnect = true
+
+	// Pick a throwaway collection name. The sidecar's real collection
+	// is `agentry_users`; we use a separate name so a botched fitness
+	// run can't shadow real data.
+	dbName := databaseFromMongoURI(uri)
+	coll := client.Database(dbName).Collection("_agentry_fitness")
+
+	// Drop any leftover from a previous failed run before writing.
+	_ = coll.Drop(ctx)
+	r.CanCreate = true
+
+	// Write.
+	if _, err := coll.InsertOne(ctx, bson.M{"_id": "ok", "stamp": time.Now().UTC()}); err != nil {
+		r.Err = fmt.Errorf("insert: %w", err)
+		return r
+	}
+	r.CanWrite = true
+
+	// Read.
+	var doc bson.M
+	if err := coll.FindOne(ctx, bson.M{"_id": "ok"}).Decode(&doc); err != nil {
+		r.Err = fmt.Errorf("find: %w", err)
+		return r
+	}
+	r.CanRead = true
+
+	// Drop.
+	if err := coll.Drop(ctx); err != nil {
+		r.Err = fmt.Errorf("drop: %w", err)
+		return r
+	}
+	r.CanCleanup = true
+	return r
+}
+
+// databaseFromMongoURI mirrors the sidecar-side helper so the
+// throwaway collection lives in the same database the sidecar will
+// later target. Duplicated rather than imported — the CLI can't
+// depend on cmd/authproxy (separate binary, separate main package).
+func databaseFromMongoURI(uri string) string {
+	idx := strings.Index(uri, "://")
+	if idx == -1 {
+		return "agentry"
+	}
+	rest := uri[idx+3:]
+	if q := strings.Index(rest, "?"); q != -1 {
+		rest = rest[:q]
+	}
+	slash := strings.Index(rest, "/")
+	if slash == -1 || slash == len(rest)-1 {
+		return "agentry"
+	}
+	return rest[slash+1:]
 }
 
 // ── OIDC provider discovery ────────────────────────────────────────────

@@ -7,7 +7,7 @@ import (
 )
 
 // State is per-machine ephemeral selection: which sandbox the user
-// has "pinned" so commands like `agentry forward` and `agentry env`
+// has "pinned" so commands like `agentry env` and `agentry service`
 // don't need an explicit --sandbox every time.
 //
 // Lives at ~/.agentry/state.json. Separate from agentry.json so we

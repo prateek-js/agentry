@@ -12,7 +12,7 @@ import (
 // device certs for these read/delete flows.
 //
 //	agentry sandbox ls                    list sandboxes on current cluster
-//	agentry sandbox use <id>              pin <id> as the default for env/forward
+//	agentry sandbox use <id>              pin <id> as the default for env/service commands
 //	agentry sandbox current               print the pinned sandbox
 //	agentry sandbox rm <id>               delete (also clears pin if it matched)
 func cmdSandbox(args []string) int {
@@ -107,8 +107,9 @@ func sandboxRm(id string) int {
 	if err := client.delete("clusters/" + cfg.Cluster + "/sandboxes/" + id); err != nil {
 		return die("delete: %v", err)
 	}
-	// Clear the pin too — otherwise the next `agentry forward` says
-	// "use --sandbox" but the user thought they had one selected.
+	// Clear the pin too — otherwise the next `agentry env`/`service`
+	// call says "use --sandbox" but the user thought they had one
+	// selected.
 	state := LoadState()
 	if state.CurrentSandbox == id {
 		state.CurrentSandbox = ""

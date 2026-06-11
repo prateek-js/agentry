@@ -450,6 +450,20 @@ func injectEnvFromFields(entry map[string]any, fieldValues map[string]string) (m
 		if key == "" || value == "" {
 			continue // user skipped the field this env depends on
 		}
+		// Percent-encode userinfo in DB connection URLs when raw
+		// special characters (e.g. `%` in a password like
+		// `4g.uW%azWbL*mZ9`) would otherwise break url.Parse downstream
+		// — at fitness-check time, at sidecar boot, and at every
+		// pgx/mongo connect. The user typed a valid password; we
+		// just have to encode it before storing.
+		if looksLikeDBURL(value) {
+			if fixed := repairConnectionURL(value); fixed != value {
+				fmt.Fprintf(os.Stderr,
+					"  note: %s contained unescaped special chars; URL-encoded the userinfo so parsers accept it\n",
+					key)
+				value = fixed
+			}
+		}
 		out[key] = value
 	}
 	return out, nil
