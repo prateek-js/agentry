@@ -211,6 +211,39 @@ func TestRateLimit_BlocksAfterMax(t *testing.T) {
 	}
 }
 
+// The unlock limiter must key on the real TLS peer, NOT X-Forwarded-For.
+// The bridge terminates TLS from the internet, so a trusted XFF would let
+// an attacker rotate the header and mint a fresh bucket per request,
+// defeating the limiter entirely.
+func TestRateLimit_IgnoresSpoofedXFF(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "https://app.agentry.live/", nil)
+	r.RemoteAddr = "9.9.9.9:5555"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1")
+	if got := clientIPForRateLimit(r); got != "9.9.9.9" {
+		t.Fatalf("clientIPForRateLimit = %q; want the RemoteAddr host 9.9.9.9, never the spoofable XFF", got)
+	}
+}
+
+// Past maxKeys, Allow evicts buckets whose minute window has rolled over,
+// so a distributed-IP flood can't grow the map without bound.
+func TestRateLimit_EvictsStaleBuckets(t *testing.T) {
+	rl := &rateLimiter{buckets: map[string]minuteBucket{}, max: 5, maxKeys: 2}
+	// Three buckets from a previous minute (bucketAt is a tiny constant,
+	// definitely != the current unix-minute index).
+	rl.buckets["a"] = minuteBucket{count: 1, bucketAt: 1}
+	rl.buckets["b"] = minuteBucket{count: 1, bucketAt: 1}
+	rl.buckets["c"] = minuteBucket{count: 1, bucketAt: 1}
+
+	rl.Allow("d") // len now 4 > maxKeys 2 → sweep drops the stale a/b/c
+
+	if len(rl.buckets) != 1 {
+		t.Fatalf("after eviction len = %d; want 1 (only the current-minute key)", len(rl.buckets))
+	}
+	if _, ok := rl.buckets["d"]; !ok {
+		t.Error("the current-minute key was wrongly evicted")
+	}
+}
+
 // prefixFor mirrors passhash.PrefixUint64 — first 8 bytes of the hash
 // as a big-endian uint64. Test-side helper so we can stage routes
 // without going through agentry-app.
