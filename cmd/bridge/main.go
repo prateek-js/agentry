@@ -160,13 +160,24 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 	//     broker handler
 	mainHandler := mtlsGate(b.Handler())
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain) {
-			host := r.Host
-			if i := strings.Index(host, ":"); i > 0 {
-				host = host[:i]
-			}
-			route, ok := deployReg.Lookup(host)
+		host := r.Host
+		if i := strings.Index(host, ":"); i > 0 {
+			host = host[:i]
+		}
+		// A request is deploy traffic if either (a) it's under our deploy
+		// domain (*.agentry.live), or (b) it's a custom domain the control
+		// plane has registered a route for. Lookup is the allowlist: a
+		// random Host with no registered route still falls through to the
+		// mTLS-gated bridge API and gets rejected (default-deny). This is
+		// what lets bring-your-own-domain hosts (app.customer.com) reach
+		// HandleDeployment even though they aren't under agentry.live.
+		route, ok := deployReg.Lookup(host)
+		underDeployDomain := env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain)
+		if ok || underDeployDomain {
 			if !ok {
+				// Under the deploy domain but no route registered yet →
+				// the friendly placeholder. (Unregistered custom domains
+				// never reach here; they fall to the API path below.)
 				deploymentPlaceholder(w, r, env.deployDomain)
 				return
 			}
