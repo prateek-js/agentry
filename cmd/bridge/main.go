@@ -49,6 +49,19 @@ func main() {
 
 	env := loadEnv()
 
+	// DEV_MODE turns off mTLS, role-CN binding, org-SAN tenancy, the
+	// cross-org routing check, and the admin gate on the route table —
+	// it makes the bridge a fully open routing pivot. That's fine for
+	// local dev, but a single stray DEV_MODE=true in production would
+	// silently collapse the entire zero-trust model. Refuse to start if
+	// DEV_MODE is on while a production domain is configured.
+	if env.devMode && (env.tlsDomain != "" || env.deployDomain != "") {
+		log.Fatalf("bridge: refusing to start — DEV_MODE disables ALL mTLS/role/org checks, "+
+			"but a production domain is configured (tls=%q deploy=%q). "+
+			"Unset DEV_MODE for production, or unset the domains for local dev.",
+			env.tlsDomain, env.deployDomain)
+	}
+
 	var caCert *x509.Certificate
 	if !env.devMode {
 		var err error
@@ -158,7 +171,7 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 	//   - hostnames under deployDomain with no route → static placeholder
 	//   - everything else (bridge.agentry.run) → existing mTLS-gated
 	//     broker handler
-	mainHandler := mtlsGate(b.Handler())
+	mainHandler := mtlsGate(b, b.Handler())
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if i := strings.Index(host, ":"); i > 0 {
@@ -206,13 +219,22 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		TLSConfig:         tlsConf,
 		ReadHeaderTimeout: 30 * time.Second,
 		// No ReadTimeout/WriteTimeout — once handleTunnel hijacks, the
-		// session is owned by yamux for hours.
+		// session is owned by yamux for hours, and deploy responses can
+		// stream. ReadHeaderTimeout already bounds slow-header slowloris;
+		// IdleTimeout reaps idle keep-alive conns (it does NOT apply to a
+		// hijacked tunnel, so it's safe here).
+		IdleTimeout: 120 * time.Second,
 	}
 
 	httpSrv := &http.Server{
-		Addr:              env.httpListen,
-		Handler:           mgr.HTTPHandler(http.HandlerFunc(redirectToHTTPS(env.tlsDomain))),
-		ReadHeaderTimeout: 30 * time.Second,
+		Addr:    env.httpListen,
+		Handler: mgr.HTTPHandler(http.HandlerFunc(redirectToHTTPS(env.tlsDomain))),
+		// :80 only serves ACME challenges + redirects — nothing hijacks,
+		// nothing streams, so it gets full slow-client timeouts.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -239,7 +261,7 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 // Cert issuance used to live behind /api/discovery on the broker; in
 // agentry that endpoint moves to app.agentry.run, so the bridge no
 // longer needs to leave it exempt.
-func mtlsGate(inner http.Handler) http.Handler {
+func mtlsGate(b *bridge.Broker, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			inner.ServeHTTP(w, r)
@@ -247,6 +269,15 @@ func mtlsGate(inner http.Handler) http.Handler {
 		}
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 			http.Error(w, "client certificate required", http.StatusUnauthorized)
+			return
+		}
+		// Revocation: a deleted cluster/device's cert is valid (CA-signed,
+		// unexpired) but must no longer be trusted. The control plane
+		// pushes revoked CNs; reject the handshake before it reaches any
+		// handler. New tunnels are blocked immediately; an already-open
+		// session rides until it drops.
+		if b.IsRevoked(r.TLS.PeerCertificates[0].Subject.CommonName) {
+			http.Error(w, "client certificate revoked", http.StatusForbidden)
 			return
 		}
 		inner.ServeHTTP(w, r)
@@ -355,9 +386,9 @@ type envConfig struct {
 	// through the bridge with a wildcard cert provisioned via Cloudflare
 	// DNS-01. Without these the bridge keeps doing only its existing
 	// mTLS-gated work on tlsDomain.
-	deployDomain      string
+	deployDomain       string
 	deployCertCacheDir string
-	cfAPIToken        string
+	cfAPIToken         string
 
 	// Org-mode deploy auth. Bridge enforces "you must be signed into
 	// the route's org" by bouncing browser traffic to a handoff
@@ -369,11 +400,11 @@ type envConfig struct {
 
 func loadEnv() envConfig {
 	cfg := envConfig{
-		devMode:     envBool("DEV_MODE"),
-		tlsDomain:   os.Getenv("TLS_DOMAIN"),
-		tlsCacheDir: os.Getenv("TLS_CACHE_DIR"),
-		httpsListen: os.Getenv("HTTPS_LISTEN"),
-		httpListen:  os.Getenv("HTTP_LISTEN"),
+		devMode:            envBool("DEV_MODE"),
+		tlsDomain:          os.Getenv("TLS_DOMAIN"),
+		tlsCacheDir:        os.Getenv("TLS_CACHE_DIR"),
+		httpsListen:        os.Getenv("HTTPS_LISTEN"),
+		httpListen:         os.Getenv("HTTP_LISTEN"),
 		caCertURL:          os.Getenv("CA_CERT_URL"),
 		caCertPath:         os.Getenv("CA_CERT_PATH"),
 		deployDomain:       os.Getenv("DEPLOY_DOMAIN"),
