@@ -29,8 +29,10 @@ import (
 // "/" and let the app route from there.
 
 type authHandlers struct {
-	cfg   *Config
-	store Store
+	cfg     *Config
+	store   Store
+	mailer  Mailer       // nil when no SMTP bound — reset routes stay dark
+	limiter *rateLimiter // per-IP throttle on credential endpoints
 }
 
 func (h *authHandlers) routes() map[string]http.HandlerFunc {
@@ -39,7 +41,7 @@ func (h *authHandlers) routes() map[string]http.HandlerFunc {
 	// trained on next-auth, lucia, and similar libraries reach for
 	// /auth/signin out of muscle memory; the alias means they hit a
 	// working page instead of a 404 that derails the iteration.
-	return map[string]http.HandlerFunc{
+	routes := map[string]http.HandlerFunc{
 		"GET /auth/login":     h.getLogin,
 		"POST /auth/login":    h.postLogin,
 		"GET /auth/signin":    h.getLogin,
@@ -53,6 +55,18 @@ func (h *authHandlers) routes() map[string]http.HandlerFunc {
 		"GET /auth/me":        h.getMe,
 		"GET /auth/session":   h.getMe, // next-auth uses /api/auth/session; this is close enough
 	}
+	// Email-gated routes: only mounted when an SMTP service is bound.
+	// Without a mailer there's no way to deliver a reset/verify link, so
+	// the routes simply don't exist (a stray GET 404s) — the login page
+	// also hides the "Forgot password?" link in that state.
+	if h.cfg.EmailEnabled() {
+		routes["GET /auth/forgot"] = h.getForgot
+		routes["POST /auth/forgot"] = h.postForgot
+		routes["GET /auth/reset"] = h.getReset
+		routes["POST /auth/reset"] = h.postReset
+		routes["GET /auth/verify"] = h.getVerify
+	}
+	return routes
 }
 
 // register attaches the auth handlers + a dispatcher onto a mux. Anything
@@ -87,9 +101,20 @@ func (h *authHandlers) getLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// Success banners from the reset/verify round-trips. These are the
+	// only query flags we honor — no free-form text reaches the page.
+	var success string
+	switch {
+	case r.URL.Query().Get("reset") == "1":
+		success = "Your password was reset. Sign in with your new password."
+	case r.URL.Query().Get("verified") == "1":
+		success = "Your email is verified. You can sign in now."
+	}
 	body, err := renderLogin(pageData{
-		CSRFToken: tok,
-		Providers: providerButtons(h.cfg.Providers),
+		CSRFToken:  tok,
+		Providers:  providerButtons(h.cfg.Providers),
+		ShowForgot: h.cfg.EmailEnabled(),
+		Success:    success,
 	})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -110,6 +135,9 @@ func (h *authHandlers) getLogin(w http.ResponseWriter, r *http.Request) {
 // + a one-line note. The user types their password once more and the
 // POST succeeds. No more 403 dead-ends.
 func (h *authHandlers) postLogin(w http.ResponseWriter, r *http.Request) {
+	if h.rateLimited(w, r) {
+		return
+	}
 	if err := validateSameOrigin(r); err != nil {
 		log.Printf("authproxy: same-origin rejected on /auth/login: %v", err)
 		http.Error(w, "request rejected (cross-origin POST)", http.StatusForbidden)
@@ -140,6 +168,14 @@ func (h *authHandlers) postLogin(w http.ResponseWriter, r *http.Request) {
 		h.loginError(w, r, "Sign-in is temporarily unavailable", email)
 		return
 	}
+	// Account lockout: too many recent failures parks the account for a
+	// backoff window. We surface this distinctly (not "invalid
+	// password") so a legit user knows to wait — the per-IP rate limit
+	// above is what stops an attacker from probing lock state.
+	if isLocked(user.LockedUntil, time.Now()) {
+		h.loginError(w, r, "Too many failed attempts. Try again in a few minutes.", email)
+		return
+	}
 	if user.PasswordHash == "" {
 		// Account was created via OAuth and never set a password. Tell
 		// the user which provider so they can use the right button.
@@ -147,9 +183,20 @@ func (h *authHandlers) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		h.recordLoginFailure(user)
 		h.loginError(w, r, "Invalid email or password", email)
 		return
 	}
+	// Optional verification gate — only reachable when SMTP is bound AND
+	// the operator opted in. Unverified users get a resend path, not a
+	// dead end.
+	if h.cfg.RequireVerification && !user.EmailVerified {
+		h.sendVerifyEmail(r, user) // best-effort resend
+		h.loginError(w, r, "Please verify your email — we just sent you a fresh link.", email)
+		return
+	}
+	// Success: clear the failure counter and mint the session.
+	_ = h.store.ResetLoginAttempts(ctx, user.ID)
 	if err := setSessionCookie(w, r, SessionPayload{
 		UID:      user.ID,
 		Email:    user.Email,
@@ -161,6 +208,31 @@ func (h *authHandlers) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// rateLimited enforces the per-IP throttle on a credential endpoint.
+// Returns true (and writes a 429) when the caller is over the limit.
+func (h *authHandlers) rateLimited(w http.ResponseWriter, r *http.Request) bool {
+	if h.limiter == nil || h.limiter.allow(remoteIP(r)) {
+		return false
+	}
+	log.Printf("authproxy: rate-limited %s from ip=%s", r.URL.Path, remoteIP(r))
+	w.Header().Set("Retry-After", "60")
+	http.Error(w, "Too many requests. Please wait a minute and try again.", http.StatusTooManyRequests)
+	return true
+}
+
+// recordLoginFailure bumps the account's failure counter and applies the
+// shared lockout policy. Best-effort: a DB hiccup here must not block the
+// login response (the user already failed; we just couldn't persist it).
+func (h *authHandlers) recordLoginFailure(user *User) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	attempts := user.FailedAttempts + 1
+	until := lockoutUntil(time.Now(), attempts)
+	if err := h.store.RecordLoginFailure(ctx, user.ID, attempts, until); err != nil {
+		log.Printf("authproxy: RecordLoginFailure: %v", err)
+	}
 }
 
 func (h *authHandlers) loginError(w http.ResponseWriter, r *http.Request, msg, email string) {
@@ -199,6 +271,9 @@ func (h *authHandlers) getSignup(w http.ResponseWriter, r *http.Request) {
 // postSignup validates CSRF, creates the user, mints session.
 // Same CSRF model as postLogin — see the doc there.
 func (h *authHandlers) postSignup(w http.ResponseWriter, r *http.Request) {
+	if h.rateLimited(w, r) {
+		return
+	}
 	if err := validateSameOrigin(r); err != nil {
 		log.Printf("authproxy: same-origin rejected on /auth/signup: %v", err)
 		http.Error(w, "request rejected (cross-origin POST)", http.StatusForbidden)
@@ -234,6 +309,17 @@ func (h *authHandlers) postSignup(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("authproxy: CreateUserPassword: %v", err)
 		h.signupError(w, r, "Sign-up is temporarily unavailable", email)
+		return
+	}
+	// Verification-required mode: don't auto-login. Send a verify link
+	// and show a "check your email" interstitial. The account exists but
+	// can't sign in until the link is clicked.
+	if h.cfg.RequireVerification {
+		h.sendVerifyEmail(r, user)
+		writeHTML(w, http.StatusOK, renderNotice(
+			"Check your email",
+			"We sent a verification link to "+user.Email+". Click it to finish setting up your account, then sign in.",
+		))
 		return
 	}
 	if err := setSessionCookie(w, r, SessionPayload{

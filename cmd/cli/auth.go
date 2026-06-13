@@ -158,6 +158,23 @@ func authEnable(args []string) int {
 	} else {
 		fmt.Printf("  providers: %s (carried over)\n", strings.Join(sortedProviderKeys(state.Providers), ", "))
 	}
+	// Capability summary — show which auth features the current binds
+	// light up, and how to enable the ones that aren't on yet. This is
+	// the "it just works when a compatible service is bound" feedback:
+	// the operator sees password-reset turn on the moment smtp is bound.
+	fmt.Println("\ncapabilities:")
+	fmt.Println("  ✓ email + password sign-in, sessions")
+	if hasBind(binds, "smtp") {
+		fmt.Println("  ✓ password reset + email verification (smtp bound)")
+	} else {
+		fmt.Println("  – password reset: bind smtp to enable → `agentry service bind smtp`")
+	}
+	if len(state.Providers) > 0 {
+		fmt.Printf("  ✓ social login: %s\n", strings.Join(sortedProviderKeys(state.Providers), ", "))
+	} else {
+		fmt.Println("  – social login: `agentry auth providers add google --client-id … --client-secret …`")
+	}
+
 	fmt.Fprintln(os.Stderr, "\nEvery new sandbox created with profile", profile, "active will inherit these vars:")
 	fmt.Fprintln(os.Stderr, "  AGENTRY_AUTH_ENABLED=true")
 	fmt.Fprintln(os.Stderr, "  AGENTRY_AUTH_DB=<bind URL>")
@@ -167,6 +184,18 @@ func authEnable(args []string) int {
 	// have to recreate them. Best-effort: logs but doesn't fail.
 	runAuthSyncForActiveProfile("enable")
 	return 0
+}
+
+// hasBind reports whether a service of the given name is bound on the
+// active profile. Used by the capability summary to tell the operator
+// which auth features their current binds enable.
+func hasBind(binds []*StoredBind, service string) bool {
+	for _, b := range binds {
+		if strings.EqualFold(b.Service, service) {
+			return true
+		}
+	}
+	return false
 }
 
 // pickDBBinding finds the postgres/mysql/mongo bind to use. Hint

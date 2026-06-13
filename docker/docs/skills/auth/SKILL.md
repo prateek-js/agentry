@@ -46,6 +46,16 @@ cookies from app code.**
    Configured providers (when the operator wired them):
    `google`, `github`, `microsoft`, `apple`, `generic-oidc`.
 
+   When an `smtp` service is bound, password reset + email verification
+   also light up automatically — the sidecar serves these and the login
+   page grows a "Forgot password?" link. DO NOT build any of them:
+   - `GET/POST /auth/forgot`  — request a reset link (enumeration-safe)
+   - `GET/POST /auth/reset`   — set a new password from the emailed link
+   - `GET      /auth/verify`  — confirm an email address
+
+   The sidecar also enforces login rate-limiting + account lockout after
+   repeated failed passwords — you don't need to add any of that either.
+
 You don't render those pages, mount those routes, or write any of
 that code. The sidecar already does.
 

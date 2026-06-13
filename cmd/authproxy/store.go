@@ -37,13 +37,22 @@ import (
 // are stateless (sealed cookies), see session.go.
 
 type User struct {
-	ID            string
-	Email         string
-	PasswordHash  string
-	Name          string
-	Provider      string // "password" | "google" | "github" | …
-	ProviderID    string
-	CreatedAt     time.Time
+	ID           string
+	Email        string
+	PasswordHash string
+	Name         string
+	Provider     string // "password" | "google" | "github" | …
+	ProviderID   string
+	CreatedAt    time.Time
+
+	// Security columns (added by the m3 auth-hardening migration; default
+	// safe on legacy rows). EmailVerified gates login only when
+	// AGENTRY_AUTH_REQUIRE_VERIFICATION is set. FailedAttempts +
+	// LockedUntil drive account lockout — LockedUntil is nil when the
+	// account isn't locked.
+	EmailVerified  bool
+	FailedAttempts int
+	LockedUntil    *time.Time
 }
 
 // Store is the thin abstraction over the user table. Keeping it
@@ -53,8 +62,29 @@ type Store interface {
 	CreateUserPassword(ctx context.Context, email, password, name string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	UpsertUserFromOAuth(ctx context.Context, provider, providerID, email, name string) (*User, error)
+
+	// Security surface (m3 auth-hardening). All best-effort-safe: a
+	// missing user is a clean (nil/ErrNoRows) result, never a panic.
+	UpdatePassword(ctx context.Context, userID, newPassword string) error
+	MarkEmailVerified(ctx context.Context, userID string) error
+	// RecordLoginFailure persists the new attempt count + lock deadline
+	// the handler computed. A zero lockedUntil clears the lock column.
+	RecordLoginFailure(ctx context.Context, userID string, attempts int, lockedUntil time.Time) error
+	ResetLoginAttempts(ctx context.Context, userID string) error
+	// CreateEmailToken stores a single-use, hashed reset/verify token.
+	CreateEmailToken(ctx context.Context, userID, purpose, tokenHash string, expiresAt time.Time) error
+	// ConsumeEmailToken atomically validates + marks-used a token,
+	// returning the owning user id. Returns ErrTokenInvalid when the
+	// token is unknown, expired, already used, or the purpose mismatches.
+	ConsumeEmailToken(ctx context.Context, purpose, tokenHash string) (userID string, err error)
+
 	Close() error
 }
+
+// ErrTokenInvalid is the single error the reset/verify paths surface for
+// any unusable token — unknown, expired, used, or wrong purpose. One
+// error so the handler can't accidentally leak which condition failed.
+var ErrTokenInvalid = errors.New("token invalid or expired")
 
 // openStore dials the bound DB + ensures the users collection/table
 // exists. Caller is responsible for calling Close() on shutdown.
@@ -149,14 +179,85 @@ func (s *sqlStore) migrate() error {
 		// (faster provider lookups) degrades silently in the worst
 		// case to a table scan.
 		_, _ = s.db.ExecContext(ctx, idxDDL)
-		return nil
-	}
-	if _, err := s.db.ExecContext(ctx, idxDDL); err != nil {
+	} else if _, err := s.db.ExecContext(ctx, idxDDL); err != nil {
 		// Same fallback for postgres — the index isn't load-bearing
 		// for correctness.
 		_ = err
 	}
+	return s.migrateSecurity(ctx)
+}
+
+// migrateSecurity adds the m3 auth-hardening columns to agentry_users
+// (idempotently, so it runs safely against tables created before this
+// feature) and creates the single-use email-token table. Column adds
+// that already exist are swallowed — postgres has ADD COLUMN IF NOT
+// EXISTS; mysql does not, so a "duplicate column" error there is the
+// expected no-op on an already-migrated table.
+func (s *sqlStore) migrateSecurity(ctx context.Context) error {
+	// 1. New columns on agentry_users.
+	var addCols []string
+	switch s.kind {
+	case "postgres":
+		addCols = []string{
+			`ALTER TABLE agentry_users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+			`ALTER TABLE agentry_users ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE agentry_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`,
+		}
+	case "mysql":
+		addCols = []string{
+			`ALTER TABLE agentry_users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 0`,
+			`ALTER TABLE agentry_users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE agentry_users ADD COLUMN locked_until DATETIME NULL`,
+		}
+	}
+	for _, ddl := range addCols {
+		if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+			// On mysql a re-run hits "Duplicate column name" (error
+			// 1060) — that's the idempotent path, not a failure. Only a
+			// non-duplicate error is fatal.
+			if !isDuplicateColumn(err) {
+				return fmt.Errorf("migrate security columns (%s): %w", s.kind, err)
+			}
+		}
+	}
+
+	// 2. Single-use email tokens (reset + verify).
+	var tokenDDL string
+	switch s.kind {
+	case "postgres":
+		tokenDDL = `CREATE TABLE IF NOT EXISTS agentry_email_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id    TEXT NOT NULL,
+            purpose    TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at    TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`
+	case "mysql":
+		tokenDDL = `CREATE TABLE IF NOT EXISTS agentry_email_tokens (
+            token_hash VARCHAR(64) PRIMARY KEY,
+            user_id    VARCHAR(64) NOT NULL,
+            purpose    VARCHAR(32) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            used_at    DATETIME NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`
+	}
+	if _, err := s.db.ExecContext(ctx, tokenDDL); err != nil {
+		return fmt.Errorf("migrate email tokens (%s): %w", s.kind, err)
+	}
 	return nil
+}
+
+// isDuplicateColumn recognises the "column already exists" error mysql
+// returns when ADD COLUMN re-runs (it lacks IF NOT EXISTS). Postgres
+// never reaches here because it uses IF NOT EXISTS.
+func isDuplicateColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column") || strings.Contains(msg, "1060")
 }
 
 // CreateUserPassword inserts a brand-new user with a bcrypt-hashed
@@ -206,12 +307,19 @@ func (s *sqlStore) CreateUserPassword(ctx context.Context, email, password, name
 // wrong" defence.
 func (s *sqlStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	q := rebind(s.kind, `SELECT id, email, password_hash, name, provider, provider_id, created_at
+	q := rebind(s.kind, `SELECT id, email, password_hash, name, provider, provider_id, created_at,
+                                email_verified, failed_attempts, locked_until
                           FROM agentry_users WHERE email = ?`)
 	row := s.db.QueryRowContext(ctx, q, email)
 	var u User
-	if err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Provider, &u.ProviderID, &u.CreatedAt); err != nil {
+	var lockedUntil sql.NullTime
+	if err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Provider, &u.ProviderID, &u.CreatedAt,
+		&u.EmailVerified, &u.FailedAttempts, &lockedUntil); err != nil {
 		return nil, err
+	}
+	if lockedUntil.Valid {
+		t := lockedUntil.Time.UTC()
+		u.LockedUntil = &t
 	}
 	return &u, nil
 }

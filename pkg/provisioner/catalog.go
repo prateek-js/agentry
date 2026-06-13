@@ -31,12 +31,13 @@ type CatalogEntry struct {
 // trip — plus the flat list of env-var names (`env_vars`) for tooling
 // that just wants to know what will be stamped into the sandbox.
 type ServiceExtra struct {
-	DisplayName string           `json:"display_name,omitempty"`
-	Category    string           `json:"category,omitempty"`
-	EnvVars     []string         `json:"env_vars"`
-	Fields      []ServiceField   `json:"fields,omitempty"`
-	Inject      *ServiceInject   `json:"inject,omitempty"`
-	GetStarted  string           `json:"get_started,omitempty"`
+	DisplayName  string         `json:"display_name,omitempty"`
+	Category     string         `json:"category,omitempty"`
+	EnvVars      []string       `json:"env_vars"`
+	Fields       []ServiceField `json:"fields,omitempty"`
+	Inject       *ServiceInject `json:"inject,omitempty"`
+	GetStarted   string         `json:"get_started,omitempty"`
+	Capabilities []string       `json:"capabilities,omitempty"`
 }
 
 // Catalog is the in-memory catalog the provisioner serves on
@@ -183,12 +184,13 @@ func mergeOverride(in []ServiceManifest, m ServiceManifest) []ServiceManifest {
 func manifestToCatalogEntry(m ServiceManifest) CatalogEntry {
 	tags := []string{m.Category}
 	extra := ServiceExtra{
-		DisplayName: m.DisplayName,
-		Category:    m.Category,
-		EnvVars:     manifestEnvVars(m),
-		Fields:      m.Fields,
-		Inject:      &m.Inject,
-		GetStarted:  m.GetStarted,
+		DisplayName:  m.DisplayName,
+		Category:     m.Category,
+		EnvVars:      manifestEnvVars(m),
+		Fields:       m.Fields,
+		Inject:       &m.Inject,
+		GetStarted:   m.GetStarted,
+		Capabilities: m.Capabilities,
 	}
 	raw, _ := json.Marshal(extra)
 	var extraMap map[string]any

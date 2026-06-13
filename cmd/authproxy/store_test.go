@@ -16,14 +16,25 @@ import (
 type fakeStore struct {
 	mu        sync.Mutex
 	byEmail   map[string]*User
+	byID      map[string]*User
 	byProvKey map[string]*User // provider+id -> user
+	tokens    map[string]*fakeToken
 	nextID    int
+}
+
+type fakeToken struct {
+	userID    string
+	purpose   string
+	expiresAt time.Time
+	used      bool
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		byEmail:   map[string]*User{},
+		byID:      map[string]*User{},
 		byProvKey: map[string]*User{},
+		tokens:    map[string]*fakeToken{},
 	}
 }
 
@@ -47,6 +58,7 @@ func (f *fakeStore) CreateUserPassword(_ context.Context, email, password, name 
 		CreatedAt:    time.Now(),
 	}
 	f.byEmail[email] = u
+	f.byID[u.ID] = u
 	return u, nil
 }
 
@@ -87,10 +99,87 @@ func (f *fakeStore) UpsertUserFromOAuth(_ context.Context, provider, providerID,
 	}
 	f.byEmail[email] = u
 	f.byProvKey[key] = u
+	f.byID[u.ID] = u
 	return u, nil
 }
 
 func (f *fakeStore) Close() error { return nil }
+
+func (f *fakeStore) UpdatePassword(_ context.Context, userID, newPassword string) error {
+	if len(newPassword) < 8 {
+		return errors.New("password too short")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[userID]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	u.PasswordHash = "h:" + newPassword
+	u.FailedAttempts = 0
+	u.LockedUntil = nil
+	return nil
+}
+
+func (f *fakeStore) MarkEmailVerified(_ context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.byID[userID]; ok {
+		u.EmailVerified = true
+	}
+	return nil
+}
+
+func (f *fakeStore) RecordLoginFailure(_ context.Context, userID string, attempts int, lockedUntil time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[userID]
+	if !ok {
+		return nil
+	}
+	u.FailedAttempts = attempts
+	if lockedUntil.IsZero() {
+		u.LockedUntil = nil
+	} else {
+		t := lockedUntil
+		u.LockedUntil = &t
+	}
+	return nil
+}
+
+func (f *fakeStore) ResetLoginAttempts(_ context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.byID[userID]; ok {
+		u.FailedAttempts = 0
+		u.LockedUntil = nil
+	}
+	return nil
+}
+
+func (f *fakeStore) CreateEmailToken(_ context.Context, userID, purpose, tokenHash string, expiresAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Drop existing tokens of the same purpose for this user.
+	for h, t := range f.tokens {
+		if t.userID == userID && t.purpose == purpose {
+			delete(f.tokens, h)
+		}
+	}
+	f.tokens[tokenHash] = &fakeToken{userID: userID, purpose: purpose, expiresAt: expiresAt}
+	return nil
+}
+
+func (f *fakeStore) ConsumeEmailToken(_ context.Context, purpose, tokenHash string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tokens[tokenHash]
+	if !ok || t.used || t.purpose != purpose || time.Now().After(t.expiresAt) {
+		return "", ErrTokenInvalid
+	}
+	t.used = true
+	return t.userID, nil
+}
 
 func idForTest(n int) string {
 	// 32-char pseudo-id, predictable for assertions.

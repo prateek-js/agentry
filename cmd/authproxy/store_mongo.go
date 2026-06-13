@@ -39,11 +39,13 @@ import (
 // uses for OAuth linking.
 
 const mongoCollection = "agentry_users"
+const mongoTokenCollection = "agentry_email_tokens"
 const mongoDefaultDB = "agentry"
 
 type mongoStore struct {
 	client *mongo.Client
 	coll   *mongo.Collection
+	tokens *mongo.Collection
 }
 
 // openMongoStore dials mongo, picks the database, ensures indexes,
@@ -63,9 +65,11 @@ func openMongoStore(url string) (Store, error) {
 	}
 
 	dbName := databaseFromURI(url)
-	coll := client.Database(dbName).Collection(mongoCollection)
+	db := client.Database(dbName)
+	coll := db.Collection(mongoCollection)
+	tokens := db.Collection(mongoTokenCollection)
 
-	s := &mongoStore{client: client, coll: coll}
+	s := &mongoStore{client: client, coll: coll, tokens: tokens}
 	if err := s.ensureIndexes(ctx); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, err
@@ -124,6 +128,16 @@ func (s *mongoStore) ensureIndexes(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create indexes: %w", err)
 	}
+	// Email-token collection: index the owner+purpose lookup, and a TTL
+	// on expires_at so consumed/expired tokens are reaped automatically
+	// (mongo's TTL monitor deletes them ~once a minute after expiry).
+	_, err = s.tokens.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "purpose", Value: 1}}, Options: options.Index().SetName("user_purpose")},
+		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("ttl_expires").SetExpireAfterSeconds(0)},
+	})
+	if err != nil {
+		return fmt.Errorf("create token indexes: %w", err)
+	}
 	return nil
 }
 
@@ -161,13 +175,15 @@ func (s *mongoStore) CreateUserPassword(ctx context.Context, email, password, na
 		CreatedAt:    time.Now().UTC(),
 	}
 	doc := bson.M{
-		"_id":           u.ID,
-		"email":         u.Email,
-		"password_hash": u.PasswordHash,
-		"name":          u.Name,
-		"provider":      u.Provider,
-		"provider_id":   "",
-		"created_at":    u.CreatedAt,
+		"_id":             u.ID,
+		"email":           u.Email,
+		"password_hash":   u.PasswordHash,
+		"name":            u.Name,
+		"provider":        u.Provider,
+		"provider_id":     "",
+		"created_at":      u.CreatedAt,
+		"email_verified":  false,
+		"failed_attempts": 0,
 	}
 	if _, err := s.coll.InsertOne(ctx, doc); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -300,6 +316,21 @@ func userFromDoc(doc bson.M) *User {
 	}
 	if v, ok := doc["created_at"].(bson.DateTime); ok {
 		u.CreatedAt = v.Time()
+	}
+	if v, ok := doc["email_verified"].(bool); ok {
+		u.EmailVerified = v
+	}
+	switch v := doc["failed_attempts"].(type) {
+	case int32:
+		u.FailedAttempts = int(v)
+	case int64:
+		u.FailedAttempts = int(v)
+	case int:
+		u.FailedAttempts = v
+	}
+	if v, ok := doc["locked_until"].(bson.DateTime); ok {
+		t := v.Time().UTC()
+		u.LockedUntil = &t
 	}
 	return u
 }

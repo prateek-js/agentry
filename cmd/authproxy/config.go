@@ -55,7 +55,21 @@ type Config struct {
 	Upstream  string
 	Providers map[string]ProviderConfig
 	Debug     bool
+
+	// Email is non-nil when an SMTP service is bound (SMTP_HOST +
+	// SMTP_FROM present). Its presence is the "email capability" — it
+	// lights up the password-reset route + the "Forgot password?" link.
+	Email *EmailConfig
+
+	// RequireVerification gates login on a verified email address. Off
+	// by default; only meaningful when Email is configured (no SMTP →
+	// no way to verify → we never block). Set via
+	// AGENTRY_AUTH_REQUIRE_VERIFICATION.
+	RequireVerification bool
 }
+
+// EmailEnabled reports whether the email capability is lit.
+func (c *Config) EmailEnabled() bool { return c.Email != nil }
 
 // ProviderConfig is what we keep per OAuth provider after parsing env
 // vars. Issuer is filled in for generic-oidc (or as an override on
@@ -123,6 +137,17 @@ func loadConfig() (*Config, error) {
 		if p, ok := readProviderEnv(name); ok {
 			cfg.Providers[name] = p
 		}
+	}
+
+	// Email capability: lit purely by the bound SMTP_* env. No flag —
+	// bind the smtp service and reset/verify become available.
+	if email, ok := loadEmailConfig(); ok {
+		cfg.Email = email
+	}
+	// Verification gate only has teeth when we can actually send mail.
+	switch strings.ToLower(os.Getenv("AGENTRY_AUTH_REQUIRE_VERIFICATION")) {
+	case "true", "1", "yes":
+		cfg.RequireVerification = cfg.Email != nil
 	}
 
 	return cfg, nil

@@ -139,7 +139,18 @@ func buildMux(cfg *Config) (*http.ServeMux, func(), error) {
 				log.Printf("authproxy: store.Close: %v", err)
 			}
 		}
-		auth := &authHandlers{cfg: cfg, store: store}
+		// Mailer is nil unless an SMTP service is bound — that nil is the
+		// "email capability off" state the handlers + login page key off.
+		var mailer Mailer
+		if cfg.EmailEnabled() {
+			mailer = newSMTPMailer(cfg.Email)
+		}
+		auth := &authHandlers{
+			cfg:     cfg,
+			store:   store,
+			mailer:  mailer,
+			limiter: newRateLimiter(loginRateMax, loginRateWindow),
+		}
 		oauth := &oauthHandlers{cfg: cfg, store: store}
 		// Order matters: oauth's per-provider routes must be
 		// registered BEFORE auth.register, because auth.register

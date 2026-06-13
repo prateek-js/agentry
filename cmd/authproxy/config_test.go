@@ -211,3 +211,61 @@ func TestDBURLFromEnvWalksFallback(t *testing.T) {
 		t.Fatalf("DATABASE_URL didn't win: %q", got)
 	}
 }
+
+func TestLoadConfigEmailCapabilityFromSMTP(t *testing.T) {
+	base := map[string]string{
+		"AGENTRY_AUTH_ENABLED": "true",
+		"AGENTRY_AUTH_DB":      "postgres",
+		"AGENTRY_AUTH_SECRET":  strings.Repeat("a", 32),
+		"DATABASE_URL":         "postgres://localhost/x",
+	}
+
+	// No SMTP → email capability off.
+	setenv(t, base)
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv("SMTP_FROM", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmailEnabled() {
+		t.Error("email should be OFF without SMTP_HOST/FROM")
+	}
+
+	// SMTP host+from → email capability on.
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_FROM", "no-reply@example.com")
+	cfg, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EmailEnabled() {
+		t.Error("email should be ON with SMTP bound")
+	}
+}
+
+func TestLoadConfigVerificationNeedsEmail(t *testing.T) {
+	base := map[string]string{
+		"AGENTRY_AUTH_ENABLED":              "true",
+		"AGENTRY_AUTH_DB":                   "postgres",
+		"AGENTRY_AUTH_SECRET":               strings.Repeat("a", 32),
+		"DATABASE_URL":                      "postgres://localhost/x",
+		"AGENTRY_AUTH_REQUIRE_VERIFICATION": "true",
+	}
+	// Verification asked for, but no SMTP → must stay OFF (we can't verify
+	// without a way to send mail; refusing-to-gate is the safe default).
+	setenv(t, base)
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv("SMTP_FROM", "")
+	cfg, _ := loadConfig()
+	if cfg.RequireVerification {
+		t.Error("verification must be disabled when no SMTP is bound")
+	}
+	// With SMTP, the flag takes effect.
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_FROM", "no-reply@example.com")
+	cfg, _ = loadConfig()
+	if !cfg.RequireVerification {
+		t.Error("verification should be enabled with SMTP + the flag")
+	}
+}

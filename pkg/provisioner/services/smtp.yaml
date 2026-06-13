@@ -1,9 +1,13 @@
 name: smtp
 display_name: SMTP (Email)
 category: email
+capabilities:
+  - email
 description: |
   Generic SMTP credentials for sending transactional email. Works with
   Mailgun, SendGrid, Postmark, Resend, AWS SES, or any SMTP relay.
+  Binding this also lights up password-reset + email-verification in
+  agentry's auth sidecar (no extra config — see `agentry auth enable`).
 
 fields:
   - name: host
