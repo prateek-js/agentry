@@ -1,5 +1,8 @@
 # Projects — managing the one server you build
 
+**Prerequisite: `docs_read("CONTRACT")` — especially rule 1 (bind
+`$PORT`, never hard-code) and rule 2 (one project per sandbox).**
+
 The server you build inside a sandbox should be a **managed project**,
 not a one-off `command_start`. Projects give you auto-restart on file
 edits, health checks, port discovery, and a single `project_list` view
@@ -38,11 +41,12 @@ Schema:
 {
   "name": "app",
   "type": "app",                     // "app" | "agent" | "service"
-  "start_command": [
-    "npm", "run", "dev", "--",
-    "--port", "3000",
-    "--hostname", "0.0.0.0"
-  ],
+  // CONTRACT rule 1: bind $PORT, never hard-code a port flag.
+  // For commands that read PORT from env natively (next dev):
+  "start_command": ["npm", "run", "dev"],
+  // For commands that only take a flag, use the shell form so $PORT
+  // expands at launch (this is what project_create scaffolds):
+  //   ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port \"${PORT:-8000}\""],
   "auto_restart": true,              // manager re-spawns on crash
   "env": { "NODE_ENV": "development" },
   "env_file": ".env",                // optional; relative to project dir
@@ -77,9 +81,11 @@ You probably already started a server via `command_start` and want to
 upgrade. Do this:
 
 1. `command_interrupt` the background command.
-2. `file_write /workspace/projects/<name>/.sandbox-project.json` with
-   the schema above. Move the source under
-   `/workspace/projects/<name>/` if it isn't there already.
+2. Move the source under `/workspace/projects/<name>/` if it isn't
+   there already, then `project_create(name="<name>", kind="custom",
+   start_command=[...])` — it writes the manifest correctly and skips
+   files that already exist. (Writing `.sandbox-project.json` by hand
+   via file_write is forbidden — project_create owns the schema.)
 3. `project_start(name="<name>")`.
 
 It's a 3-tool-call migration. Cheaper than continuing to drive a

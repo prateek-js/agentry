@@ -4,6 +4,16 @@ For data dashboards, quick exploration UIs, interactive ML demos,
 and any "make a UI on top of this notebook" request where Streamlit
 is faster than a real frontend.
 
+**Prerequisite: `docs_read("CONTRACT")` — bind `$PORT` (rule 1), bind
+services before coding against them (rule 3), report platform
+problems instead of patching around them (rule 5).**
+
+The scaffolded `start_command` binds `"${PORT:-8501}"` via `sh -c` —
+when agentry auth is on, the runtime sets `PORT` and the platform
+sidecar fronts your app; don't replace the variable with a number.
+Reading from a database / CSV-in-bucket / API? `service_bind` FIRST
+(`docs_read("services")`), then read env vars in app.py.
+
 ## Lifecycle (don't skip)
 
 ```

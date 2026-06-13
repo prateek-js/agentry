@@ -62,7 +62,7 @@ func (p *Provisioner) runtimeFileRead(ctx context.Context, sandboxID, path strin
 	if p.config.RuntimeAPIKey != "" {
 		req.Header.Set("X-Sandbox-API-Key", p.config.RuntimeAPIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sandboxHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (p *Provisioner) runtimeFileWrite(ctx context.Context, sandboxID, path stri
 	if p.config.RuntimeAPIKey != "" {
 		req.Header.Set("X-Sandbox-API-Key", p.config.RuntimeAPIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sandboxHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

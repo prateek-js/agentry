@@ -85,6 +85,13 @@ func buildPod(namespace string, spec SandboxSpec) (*corev1.Pod, error) {
 		return nil, err
 	}
 
+	env := []corev1.EnvVar{{Name: "SANDBOX_ID", Value: spec.SandboxID}}
+	if spec.RuntimeAPIKey != "" {
+		// Locks the runtime API to this provisioner; the runtime reads
+		// $SANDBOX_API_KEY and rejects calls that don't carry it.
+		env = append(env, corev1.EnvVar{Name: "SANDBOX_API_KEY", Value: spec.RuntimeAPIKey})
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "sandbox-" + spec.SandboxID,
@@ -102,9 +109,7 @@ func buildPod(namespace string, spec SandboxSpec) (*corev1.Pod, error) {
 					ContainerPort: 8080,
 					Protocol:      corev1.ProtocolTCP,
 				}},
-				Env: []corev1.EnvVar{
-					{Name: "SANDBOX_ID", Value: spec.SandboxID},
-				},
+				Env:          env,
 				Resources:    resources,
 				VolumeMounts: mounts,
 				ReadinessProbe: &corev1.Probe{

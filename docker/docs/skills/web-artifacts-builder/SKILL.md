@@ -6,6 +6,10 @@ license: Apache 2.0
 
 # Web Artifacts Builder
 
+**Trigger: the user EXPLICITLY asked for a single-file HTML artifact** ("give me one HTML file I can email / open locally"). For anything served from the sandbox, use a managed project instead (README router).
+
+**Design rule applies here too:** before writing any JSX, read `../frontend-design/SKILL.md` and pick a palette from `../theme-factory/themes/` or a named style from `../theme-factory/styles-catalog.md`. Single-file artifacts are NOT exempt from the no-AI-slop bar — run the ai-tells check before declaring done.
+
 To build powerful single-file HTML artifacts, follow these steps:
 1. Initialize the frontend repo using `scripts/init-artifact.sh`
 2. Develop your artifact by editing the generated code

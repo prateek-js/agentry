@@ -7,6 +7,12 @@ license: Complete terms in LICENSE.txt
 
 # Theme Factory Skill
 
+**Two distinct catalogs live here — don't confuse them:**
+- `themes/<name>.md` — 10 tuned PALETTES (colors + fonts + motion), e.g. arctic-frost, midnight-galaxy. Use when you need a coherent color system for the direction you already picked in `../frontend-design/SKILL.md`.
+- `styles-catalog.md` — 50+ named VISUAL LANGUAGES (bento, neobrutalist, swiss, dark cinema, …). Use when the user names a style, or when the design direction calls for a stronger committed language than a palette alone.
+
+Pick ONE of the two paths per build. The workflow below applies to the 10-theme path.
+
 This skill provides a curated collection of professional font and color themes themes, each with carefully selected color palettes and font pairings. Once a theme is chosen, it can be applied to any artifact.
 
 ## Purpose

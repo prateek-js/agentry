@@ -4,6 +4,13 @@ For one-page sites, landing pages, marketing pages, portfolios,
 conference pages, microsites — anything where you'd otherwise be
 tempted to tell the user "just run `python3 -m http.server`".
 
+**Prerequisite: `docs_read("CONTRACT")` — bind `$PORT` (rule 1), bind
+services before coding against them (rule 3), report platform
+problems instead of patching around them (rule 5).**
+
+The scaffolded `start_command` binds `"${PORT:-8000}"` via `sh -c` —
+leave the variable in place (CONTRACT rule 1).
+
 ## Lifecycle (don't skip)
 
 ```

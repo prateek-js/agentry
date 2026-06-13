@@ -59,9 +59,23 @@ DAILY USE
   agentry sandbox rm <id>                  delete a sandbox
 
   agentry pull [<sandbox>]                 download the sandbox to ./<sandbox>/
-  agentry forward [<sandbox>:]<port>       expose a sandbox port on localhost
   agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
+
+MULTI-ENV (profiles — one cluster, many configurations)
+  agentry profile                          print the active profile
+  agentry profile list                     table of every profile on this laptop
+  agentry profile use <name>               switch the active profile
+  agentry profile create <name>            create an empty profile
+  agentry profile show [--profile <name>]  list envs + binds under a profile
+  agentry profile copy <src> <dst>         clone one profile into another
+
+AUTH (login + sessions for apps built on agentry)
+  agentry auth                             show the active profile's auth posture
+  agentry auth enable                      fitness-check the DB + mint AUTH_SECRET
+  agentry auth disable                     remove auth state for this profile
+  agentry auth providers add <name>        register an OAuth provider (google, github, …)
+  agentry auth providers list              table of every provider on this profile
 
 EDITOR INTEGRATION
   agentry mcp                              MCP server on stdin/stdout
@@ -130,10 +144,12 @@ func dispatch(args []string) int {
 		// stdio is the legacy name kept as an alias so existing
 		// Claude Desktop / Roo configs keep working.
 		return cmdMCP(args[1:])
-	case "forward":
-		return cmdForward(args[1:])
 	case "env":
 		return cmdEnv(args[1:])
+	case "profile":
+		return cmdProfile(args[1:])
+	case "auth":
+		return cmdAuth(args[1:])
 	case "pull":
 		return cmdPull(args[1:])
 	case "share":
@@ -270,9 +286,15 @@ func cmdMCP(_ []string) int {
 		// fresh sandbox always gets the binds + envs matching the
 		// cluster the request was routed to.
 		PostCreateHook: chainHooks(
-			applyClusterDefaults(clusterRef.Get, tunneledHTTP),
-			applyClusterEnvDefaults(clusterRef.Get, tunneledHTTP),
+			applyClusterDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
+			applyClusterEnvDefaults(clusterAndProfile(clusterRef.Get), tunneledHTTP),
 		),
+		// deployment_status reads the control plane over the laptop's
+		// PAT — a different origin than the tunnel above. Only wire it
+		// when the laptop is actually logged in; otherwise leave it nil
+		// so the tool points the user at the dashboard rather than
+		// erroring on a missing token every call.
+		DeploymentStatusHook: deploymentStatusHookIfAvailable(cfg),
 	})
 
 	// Watchdogs around the stdio loop. Two failure modes we've seen

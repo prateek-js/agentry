@@ -3,6 +3,14 @@
 For small APIs, internal endpoints, JSON services — anything where
 the user wants "a backend" but not a full app.
 
+**Prerequisite: `docs_read("CONTRACT")` — bind `$PORT` (rule 1), bind
+services before coding against them (rule 3), report platform
+problems instead of patching around them (rule 5).**
+
+Needs a database / cache / external API? `service_bind` it FIRST
+(`docs_read("services")` for the table + namespacing patterns), then
+write code that reads the env vars the bind reported.
+
 ## Lifecycle (don't skip)
 
 ```
@@ -16,10 +24,14 @@ project_start   { name: "<short-name>" }
 - `/workspace/projects/<name>/requirements.txt` (`fastapi`,
   `uvicorn[standard]`)
 
-`project_start` runs:
+`project_start` runs (via `sh -c` so `$PORT` expands at launch time):
 ```
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+exec uvicorn app:app --host 0.0.0.0 --port "${PORT:-8000}" --reload
 ```
+
+`$PORT` is set by the runtime. When `AGENTRY_AUTH_ENABLED=true` the
+authproxy sidecar binds the public port (3000) and your uvicorn
+process gets `PORT=3001`. Without auth, `PORT` defaults to 8000.
 
 The `--reload` flag means edits to `.py` files are picked up without
 a restart — good for iteration, but the project manager's

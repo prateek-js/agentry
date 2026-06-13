@@ -8,7 +8,69 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
+
+// portCacheTTL is how long a pgid's discovered ports are reused before
+// re-running `ss`. project_list is the tool LLMs poll most while waiting
+// for a server to bind, and each uncached call forks `ss` + stats every
+// listening pid's /proc entry. One second is short enough that a port
+// appearing feels instant to the poller, long enough that a tight poll
+// loop doesn't fork a subprocess per call. Var (not const) so tests can
+// drop it to zero.
+var portCacheTTL = 1 * time.Second
+
+type portCacheEntry struct {
+	ports []int
+	at    time.Time
+}
+
+var (
+	portCacheMu sync.Mutex
+	portCache   = map[int]portCacheEntry{}
+)
+
+// portsForPGIDCached wraps portsForPGID with a short per-pgid TTL cache.
+// The expensive `ss` call runs OUTSIDE the lock so concurrent lookups
+// for different projects don't serialize; a rare double-fetch for the
+// same pgid under contention is harmless (same answer). Stale entries
+// are swept opportunistically on write so restarted projects (each gets
+// a fresh pgid) don't leak map entries forever.
+func portsForPGIDCached(pgid int) []int {
+	return cachedPorts(pgid, portsForPGID)
+}
+
+// cachedPorts is the cache layer behind portsForPGIDCached, with the
+// expensive fetch injected so tests can drive it without forking `ss`.
+func cachedPorts(pgid int, fetch func(int) []int) []int {
+	if pgid <= 0 {
+		return nil
+	}
+	portCacheMu.Lock()
+	if e, ok := portCache[pgid]; ok && time.Since(e.at) < portCacheTTL {
+		ports := e.ports
+		portCacheMu.Unlock()
+		return ports
+	}
+	portCacheMu.Unlock()
+
+	ports := fetch(pgid)
+
+	now := time.Now()
+	portCacheMu.Lock()
+	portCache[pgid] = portCacheEntry{ports: ports, at: now}
+	// Cheap GC: when the map grows, drop anything well past its TTL.
+	if len(portCache) > 32 {
+		for k, e := range portCache {
+			if now.Sub(e.at) > 60*time.Second {
+				delete(portCache, k)
+			}
+		}
+	}
+	portCacheMu.Unlock()
+	return ports
+}
 
 // portsForPGID returns every TCP port some process in `pgid` is
 // currently LISTENING on, deduped and sorted. Returns nil (not an

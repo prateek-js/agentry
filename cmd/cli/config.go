@@ -21,11 +21,21 @@ import (
 //
 // Set on `agentry cluster use`:
 //   - Cluster: which X-Cluster value subsequent commands stamp
+// Set on `agentry profile use`:
+//   - Profile: the named env/binds slice within the active cluster
+//     ("dev", "prod", "staging", …). Empty = "default". A profile is
+//     just a directory of envs/binds — creating one with the CLI
+//     subcommand makes the dir; deleting purges it. Profiles persist
+//     across cluster switches: switching from cluster A (profile=dev)
+//     to cluster B keeps profile=dev — but its contents are
+//     cluster-scoped, so cluster B's dev profile is independent of
+//     cluster A's.
 type Config struct {
 	AppURL    string `json:"app_url"`
 	BrokerURL string `json:"broker_url"`
 	DeviceID  string `json:"device_id"`
 	Cluster   string `json:"cluster,omitempty"`
+	Profile   string `json:"profile,omitempty"`
 
 	// mTLS material for the bridge tunnel.
 	DeviceCertPath string `json:"device_cert_path,omitempty"`

@@ -68,6 +68,10 @@ type Broker struct {
 	// AttachDeploy from cmd/bridge after the registry exists. Nil when
 	// the bridge isn't configured for deployment ingress.
 	deploy *DeployRegistry
+
+	// revocation is the cert denylist the control plane pushes; mtlsGate
+	// rejects a handshake whose peer-cert CN is in it. See revocation.go.
+	revocation *revocationSet
 }
 
 // Tenancy: every connected device + cluster carries the org_id that
@@ -103,9 +107,10 @@ func New() *Broker { return NewWithConfig(Config{}) }
 // TLS config it builds outside this package.
 func NewWithConfig(cfg Config) *Broker {
 	return &Broker{
-		cfg:      cfg,
-		devices:  make(map[string][]*deviceConn),
-		clusters: make(map[string]*clusterConn),
+		cfg:        cfg,
+		devices:    make(map[string][]*deviceConn),
+		clusters:   make(map[string]*clusterConn),
+		revocation: newRevocationSet(),
 	}
 }
 
@@ -144,8 +149,14 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("POST /api/clusters/{id}/sandboxes/{sid}/secrets", b.handleClusterSandboxSecretSet)
 	mux.HandleFunc("/api/clusters/{id}/deployments", b.handleClusterDeploymentsRoot)
 	mux.HandleFunc("/api/clusters/{id}/deployments/{rest...}", b.handleClusterDeployments)
+	// Image/container garbage collection on the cluster host. Candidates
+	// is read-only review; the POST removes only the operator-reviewed
+	// ids. Both proxy straight through to the provisioner's /api/gc*.
+	mux.HandleFunc("GET /api/clusters/{id}/gc/candidates", b.handleClusterGCCandidates)
+	mux.HandleFunc("POST /api/clusters/{id}/gc", b.handleClusterGC)
 	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
 	mux.HandleFunc("PUT /api/deploy-routes", b.handleDeployRoutesPut)
+	mux.HandleFunc("PUT /api/revoked-cns", b.handleRevokedCNsPut)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -386,6 +397,14 @@ func (b *Broker) handleClusterDeployments(w http.ResponseWriter, r *http.Request
 		return
 	}
 	b.proxyToCluster(w, r, r.PathValue("id"), "/api/deployments/"+rest)
+}
+
+func (b *Broker) handleClusterGCCandidates(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/gc/candidates")
+}
+
+func (b *Broker) handleClusterGC(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/gc")
 }
 
 // proxyToCluster is the shared reverse-proxy plumbing for any admin

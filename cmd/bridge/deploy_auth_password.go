@@ -247,16 +247,19 @@ func stripPort(host string) string {
 	return host
 }
 
-// clientIPForRateLimit picks the IP we'll key the rate limit by. If
-// the bridge is behind a proxy that sets X-Forwarded-For we use the
-// leftmost entry; otherwise RemoteAddr's host part.
+// clientIPForRateLimit picks the IP we key the unlock rate limit by.
+//
+// We use the real TLS peer (RemoteAddr) and deliberately DO NOT trust
+// X-Forwarded-For: the bridge terminates TLS directly from the internet,
+// so an attacker can set any XFF value and mint a fresh bucket per
+// request — which would defeat the limiter entirely. RemoteAddr is the
+// kernel's view of the connection and cannot be spoofed.
+//
+// For custom domains proxied through Cloudflare the peer is Cloudflare's
+// edge, so those requests share a bucket per CF IP. That's intentionally
+// conservative (bounded, never bypassable); 30/min across a single
+// password page is far above any legitimate human unlock rate.
 func clientIPForRateLimit(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
@@ -278,45 +281,55 @@ func htmlEscape(s string) string {
 
 // ── Rate limiter ───────────────────────────────────────────────────
 
-// minuteBucket counts attempts per minute. Lazy cleanup: keys live
-// forever in the map but each bucket is cheap (24 bytes) and the
-// number of distinct attacker IPs is bounded.
+// rlMaxKeys caps the number of tracked IPs. Past it, Allow evicts
+// buckets from a previous minute (they can't be limiting anything now),
+// so a distributed-IP flood can't grow the map without bound and OOM
+// the single-process bridge.
+const rlMaxKeys = 4096
+
+// minuteBucket counts attempts within one unix-minute window. Stored by
+// value under the limiter's single lock — no per-bucket mutex.
 type minuteBucket struct {
-	mu       sync.Mutex
 	count    int
 	bucketAt int64 // unix minute index
 }
 
 type rateLimiter struct {
 	mu      sync.Mutex
-	buckets map[string]*minuteBucket
+	buckets map[string]minuteBucket
 	max     int
+	maxKeys int
 }
 
 func newRateLimiter(maxPerMin int) *rateLimiter {
-	return &rateLimiter{buckets: make(map[string]*minuteBucket), max: maxPerMin}
+	return &rateLimiter{buckets: make(map[string]minuteBucket), max: maxPerMin, maxKeys: rlMaxKeys}
 }
 
 func (rl *rateLimiter) Allow(key string) bool {
-	rl.mu.Lock()
-	b, ok := rl.buckets[key]
-	if !ok {
-		b = &minuteBucket{}
-		rl.buckets[key] = b
-	}
-	rl.mu.Unlock()
-
 	now := time.Now().Unix() / 60
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	b := rl.buckets[key]
 	if b.bucketAt != now {
-		b.bucketAt = now
-		b.count = 0
+		b = minuteBucket{bucketAt: now}
 	}
 	if b.count >= rl.max {
+		rl.buckets[key] = b
 		return false
 	}
 	b.count++
+	rl.buckets[key] = b
+
+	// Bounded eviction: only sweep once we exceed the cap, and only drop
+	// entries whose window has already rolled over.
+	if len(rl.buckets) > rl.maxKeys {
+		for k, v := range rl.buckets {
+			if v.bucketAt != now {
+				delete(rl.buckets, k)
+			}
+		}
+	}
 	return true
 }
 

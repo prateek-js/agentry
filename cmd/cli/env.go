@@ -56,10 +56,14 @@ func envSet(args []string) int {
 	// Explicit user choice ("") vs unset (""). flag.String returns the
 	// default for both; we distinguish via fs.Lookup("sandbox").
 	sandbox := fs.String("sandbox", "", "target sandbox id (omit = save as cluster default for every sandbox in this cluster)")
-	if err := fs.Parse(args); err != nil {
+	profile := fs.String("profile", "", "profile to write to (default: active profile)")
+	// Use splitFlagsAndPositionals so flags can appear AFTER positional
+	// args too — `agentry env set NAME VALUE --profile dev` should
+	// work the way users instinctively type it.
+	flagArgs, rest := splitFlagsAndPositionals(args)
+	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
-	rest := fs.Args()
 	if len(rest) < 1 {
 		return die("agentry env set [--sandbox <id>] NAME [VALUE]\n" +
 			"  (omit VALUE to be prompted with hidden input)\n" +
@@ -92,11 +96,12 @@ func envSet(args []string) int {
 			return die("no server set — run `agentry server use <name>` first " +
 				"(or pass --sandbox <id> to set this only on one sandbox)")
 		}
-		if err := saveEnv(cfg.Cluster, &StoredEnv{Name: name, Value: value}); err != nil {
+		prof := resolveProfile(cfg, *profile)
+		if err := saveEnv(cfg.Cluster, prof, &StoredEnv{Name: name, Value: value}); err != nil {
 			return die("save: %v", err)
 		}
-		fmt.Printf("staged %s as cluster default on server %q — applied to every new sandbox\n",
-			name, cfg.Cluster)
+		fmt.Printf("staged %s on server %q (profile %q) — applied to every new sandbox you create with this profile active\n",
+			name, cfg.Cluster, prof)
 		return 0
 	}
 
@@ -115,10 +120,11 @@ func envSet(args []string) int {
 func envUnset(args []string) int {
 	fs := flag.NewFlagSet("agentry env unset", flag.ContinueOnError)
 	sandbox := fs.String("sandbox", "", "target sandbox id (omit = remove cluster default)")
-	if err := fs.Parse(args); err != nil {
+	profile := fs.String("profile", "", "profile to remove from (default: active profile)")
+	flagArgs, rest := splitFlagsAndPositionals(args)
+	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
-	rest := fs.Args()
 	if len(rest) < 1 {
 		return die("agentry env unset [--sandbox <id>] NAME")
 	}
@@ -131,10 +137,11 @@ func envUnset(args []string) int {
 		if cfg.Cluster == "" {
 			return die("no server set — run `agentry server use <name>` first")
 		}
-		if err := deleteEnv(cfg.Cluster, name); err != nil {
+		prof := resolveProfile(cfg, *profile)
+		if err := deleteEnv(cfg.Cluster, prof, name); err != nil {
 			return die("delete: %v", err)
 		}
-		fmt.Printf("removed %s cluster default on server %q\n", name, cfg.Cluster)
+		fmt.Printf("removed %s on server %q (profile %q)\n", name, cfg.Cluster, prof)
 		return 0
 	}
 	sb := resolveSandbox(*sandbox)
@@ -147,6 +154,7 @@ func envUnset(args []string) int {
 func envList(args []string) int {
 	fs := flag.NewFlagSet("agentry env ls", flag.ContinueOnError)
 	sandbox := fs.String("sandbox", "", "target sandbox id (omit = list cluster defaults staged on the laptop)")
+	profile := fs.String("profile", "", "profile to list (default: active profile)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -160,12 +168,13 @@ func envList(args []string) int {
 		if cfg.Cluster == "" {
 			return die("no server set — run `agentry server use <name>` first")
 		}
-		envs, err := listEnvs(cfg.Cluster)
+		prof := resolveProfile(cfg, *profile)
+		envs, err := listEnvs(cfg.Cluster, prof)
 		if err != nil {
 			return die("list envs: %v", err)
 		}
 		if len(envs) == 0 {
-			fmt.Println("(no cluster-default env vars staged on this laptop for server " + cfg.Cluster + ")")
+			fmt.Printf("(no env vars staged on this laptop for server %q profile %q)\n", cfg.Cluster, prof)
 			return 0
 		}
 		for _, e := range envs {

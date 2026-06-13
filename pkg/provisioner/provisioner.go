@@ -163,6 +163,11 @@ type SandboxSpec struct {
 	// Egress is the outbound packet-filter policy the backend installs at
 	// the sandbox's netns boundary. Zero-value = no policy.
 	Egress EgressPolicy
+
+	// RuntimeAPIKey, when non-empty, is injected into the container as
+	// $SANDBOX_API_KEY so the runtime requires it on every control-plane
+	// call. Empty = runtime accepts unauthed calls (local-dev posture).
+	RuntimeAPIKey string
 }
 
 // New creates a new Provisioner. Reads $SANDBOX_API_KEY for optional auth.
@@ -369,6 +374,7 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// the bridge via the deployment proxy below.
 	mux.HandleFunc("POST /api/deployments", p.handleDeploymentRun)
 	mux.HandleFunc("GET /api/deployments/{id}", p.handleDeploymentGet)
+	mux.HandleFunc("GET /api/deployments/{id}/logs", p.handleDeploymentLogs)
 	mux.HandleFunc("DELETE /api/deployments/{id}", p.handleDeploymentStop)
 	mux.HandleFunc("/api/deployments/{id}/proxy/{rest...}", p.handleDeploymentProxy)
 
@@ -383,6 +389,13 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	// don't leak into chat context). Listed by name only.
 	mux.HandleFunc("POST /api/sandboxes/{id}/secrets", p.handleSecretSet)
 	mux.HandleFunc("GET /api/sandboxes/{id}/secrets", p.handleSecretList)
+
+	// Garbage collection — intentional, operator-reviewed. Candidates is
+	// read-only; the POST removes only the reviewed ids and re-validates
+	// each against the reclaimable set first. Surfaced on the dashboard's
+	// server detail page.
+	mux.HandleFunc("GET /api/gc/candidates", p.handleGCCandidates)
+	mux.HandleFunc("POST /api/gc", p.handleGC)
 
 	// Catch-all reverse-proxy: /api/sandboxes/{id}/runtime/* forwards
 	// to the named sandbox's runtime. This is what makes runtime
@@ -484,16 +497,17 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := SandboxSpec{
-		SandboxID:    finalID,
-		ThreadID:     req.ThreadID,
-		Image:        p.config.SandboxImage,
-		Labels:       p.config.Labels,
-		NodeHost:     p.config.NodeHost,
-		Resources:    req.Resources,
-		RuntimeClass: req.RuntimeClass,
-		Annotations:  annotations,
-		Volumes:      req.Volumes,
-		Egress:       req.Egress,
+		SandboxID:     finalID,
+		ThreadID:      req.ThreadID,
+		Image:         p.config.SandboxImage,
+		Labels:        p.config.Labels,
+		NodeHost:      p.config.NodeHost,
+		Resources:     req.Resources,
+		RuntimeClass:  req.RuntimeClass,
+		Annotations:   annotations,
+		Volumes:       req.Volumes,
+		Egress:        req.Egress,
+		RuntimeAPIKey: p.config.RuntimeAPIKey,
 	}
 
 	// Create pod.

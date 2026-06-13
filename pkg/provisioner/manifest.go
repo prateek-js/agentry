@@ -27,6 +27,13 @@ type ServiceManifest struct {
 	Fields      []ServiceField     `yaml:"fields" json:"fields"`
 	Inject      ServiceInject      `yaml:"inject" json:"inject"`
 	GetStarted  string             `yaml:"get_started,omitempty" json:"get_started,omitempty"`
+
+	// Capabilities are coarse feature tags a binding unlocks downstream —
+	// e.g. smtp → ["email"]. The authproxy lights up password reset +
+	// verification from SMTP env directly; this tag is what lets
+	// `agentry auth enable` and the catalog UI tell the operator which
+	// auth features a given bind enables. Optional; most services have none.
+	Capabilities []string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 }
 
 // ServiceField describes one input the user must supply when binding

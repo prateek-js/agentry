@@ -2,8 +2,11 @@
 package provisioner
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -49,11 +52,18 @@ type Config struct {
 	// rule env vars; see defaultEgressFromEnv.
 	DefaultEgress EgressPolicy
 
-	// RuntimeAPIKey is the X-Sandbox-API-Key the provisioner stamps on
-	// direct (non-tunneled) calls to the runtime container — e.g. when
-	// writing service-binding files into /etc/sandbox/creds/agentry/. Empty
-	// means "runtime accepts unauthed calls", which is the dev posture.
-	// Set via SANDBOX_RUNTIME_API_KEY.
+	// RuntimeAPIKey is the X-Sandbox-API-Key the provisioner injects into
+	// every sandbox container (as $SANDBOX_API_KEY) and stamps on every
+	// call it makes to a runtime. The runtime then refuses any request
+	// that doesn't carry it — so the shell/file/code-exec API can't be
+	// driven by a co-located process or SSRF that reaches the loopback
+	// port; only this provisioner can.
+	//
+	// It is auto-managed: EnsureRuntimeAPIKey generates one and persists
+	// it under CertDir on first boot, so operators never set it and the
+	// user-facing flow (paste the provisioner command, done) is unchanged.
+	// AGENTRY_RUNTIME_API_KEY overrides it; with no CertDir (pure local
+	// dev) it stays empty and the runtime accepts unauthed calls.
 	RuntimeAPIKey string
 
 	// BridgeURL, when non-empty, makes the provisioner phone home to
@@ -124,7 +134,13 @@ func DefaultConfig() Config {
 		SandboxImage:   envOr("SANDBOX_IMAGE", "agentry/runtime:latest"),
 		NodeHost:       envOr("NODE_HOST", defaultHost),
 		KubeconfigPath: envOr("KUBECONFIG_PATH", os.ExpandEnv("$HOME/.kube/config")),
-		ListenAddr:     envOr("PROVISIONER_ADDR", ":8002"),
+		// Loopback by default: the control API (create/delete sandbox,
+		// runtime proxy, bindings/env secrets, deploy) is reached in
+		// production over the outbound bridge tunnel, never by dialing
+		// this port. Binding all interfaces would expose that API to the
+		// LAN / a misconfigured security group / a co-located container.
+		// Operators who genuinely need a network bind set PROVISIONER_ADDR.
+		ListenAddr: envOr("PROVISIONER_ADDR", "127.0.0.1:8002"),
 		Labels: map[string]string{
 			"app":                          "agentry-sandbox",
 			"app.kubernetes.io/name":       "agentry",
@@ -270,6 +286,51 @@ func defaultVolumesFromEnv() []Volume {
 		ReadOnly:  true,
 		HostPath:  &HostPathSource{Path: credsDir, Type: "Directory"},
 	}}
+}
+
+// runtimeKeyFile is the basename under CertDir where the auto-generated
+// runtime API key is persisted (0600), so it's stable across provisioner
+// restarts — existing sandboxes keep validating against the same key.
+const runtimeKeyFile = "runtime-api.key"
+
+// EnsureRuntimeAPIKey makes cfg.RuntimeAPIKey non-empty without any
+// operator action, so sandbox runtimes are locked down by default:
+//
+//   - AGENTRY_RUNTIME_API_KEY set → use it verbatim (explicit override).
+//   - else CertDir set → read CertDir/runtime-api.key, generating +
+//     persisting (0600) a random key on first boot.
+//   - else (no CertDir, pure local dev) → leave empty; the runtime
+//     accepts unauthed calls, matching the existing dev posture.
+//
+// It's intentionally best-effort: a filesystem error logs and leaves the
+// key empty rather than blocking startup, since the loopback bind is the
+// primary control and the key is defense-in-depth.
+func EnsureRuntimeAPIKey(cfg *Config) {
+	if cfg.RuntimeAPIKey != "" || cfg.CertDir == "" {
+		return
+	}
+	path := filepath.Join(cfg.CertDir, runtimeKeyFile)
+	if b, err := os.ReadFile(path); err == nil {
+		if k := strings.TrimSpace(string(b)); k != "" {
+			cfg.RuntimeAPIKey = k
+			return
+		}
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		log.Printf("provisioner: could not generate runtime API key (%v); runtime auth stays OFF", err)
+		return
+	}
+	key := hex.EncodeToString(buf)
+	if err := os.MkdirAll(cfg.CertDir, 0o700); err != nil {
+		log.Printf("provisioner: could not create CertDir for runtime key (%v); runtime auth stays OFF", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(key), 0o600); err != nil {
+		log.Printf("provisioner: could not persist runtime API key (%v); runtime auth stays OFF", err)
+		return
+	}
+	cfg.RuntimeAPIKey = key
 }
 
 func envOr(key, fallback string) string {

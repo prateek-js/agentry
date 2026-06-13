@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -23,6 +24,12 @@ type BackoffConfig struct {
 	// MaxAttempts: 0 means infinite. Set when the caller wants to give
 	// up after N tries (used for one-shot operations like login).
 	MaxAttempts int
+	// Jitter, in (0,1], spreads the delay down by up to this fraction:
+	// the returned delay is uniform in [d*(1-Jitter), d]. Without it,
+	// a fleet of clients that all dropped at the same instant (e.g. a
+	// bridge restart) retries in lockstep at t=Base,2·Base,… and can
+	// re-collide on every wave. 0 disables jitter (deterministic).
+	Jitter float64
 }
 
 // DialerBackoff is the right config for the long-lived tunnel session
@@ -35,6 +42,7 @@ func DialerBackoff() BackoffConfig {
 		Max:         5 * time.Minute,
 		ResetAfter:  10 * time.Minute,
 		MaxAttempts: 0,
+		Jitter:      0.3, // ±up-to-30% so a fleet doesn't reconnect in lockstep
 	}
 }
 
@@ -92,6 +100,11 @@ func (b *Backoff) Next() time.Duration {
 	}
 	b.attempts++
 	b.last = time.Now()
+	if b.cfg.Jitter > 0 {
+		if spread := int64(float64(d) * b.cfg.Jitter); spread > 0 {
+			d -= time.Duration(rand.Int63n(spread))
+		}
+	}
 	return d
 }
 

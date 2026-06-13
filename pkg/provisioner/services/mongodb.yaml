@@ -15,11 +15,17 @@ fields:
     prod_required: true
     pattern: ^mongodb(\+srv)?://.+$
 
+# NOTE: deliberately no DATABASE_URL here. That name is the SQL
+# convention (postgres + mysql inject it), and a cluster with both
+# mongo AND a SQL DB bound would have two services fighting over one
+# env var — last-write-wins in the shell, and excluding one binding
+# in the deploy form used to collaterally kill the other's key.
+# Mongo code reads MONGODB_URL / MONGODB_URI (the names our docs and
+# the auth sidecar use).
 inject:
   env:
     MONGODB_URL: "{url}"
     MONGODB_URI: "{url}"
-    DATABASE_URL: "{url}"
   creds:
     /etc/sandbox/creds/mongodb/url: "{url}"
 

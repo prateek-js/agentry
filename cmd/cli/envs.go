@@ -36,19 +36,24 @@ type StoredEnv struct {
 	Value string `json:"value"`
 }
 
-// envsDir returns ~/.ad-sandbox/envs/<cluster>/ for the given cluster
-// (config-dir aware so tests can redirect via $XDP_CONFIG). Sibling
-// of bindsDir; both anchor under the agentry config root.
-func envsDir(cluster string) string {
+// envsDir returns the cluster + profile-scoped env-var directory,
+// honouring $AGENTRY_CONFIG. Sibling of bindsDir; both anchor under
+// the agentry config root and both run the same legacy → default-
+// profile migration on first call.
+func envsDir(cluster, profile string) string {
 	if cluster == "" {
 		return ""
 	}
+	if profile == "" {
+		profile = defaultProfile
+	}
+	migrateLegacyProfileLayout()
 	base := filepath.Dir(ConfigPath())
-	return filepath.Join(base, "envs", cluster)
+	return filepath.Join(base, "envs", cluster, profile)
 }
 
-func envFilePath(cluster, name string) string {
-	return filepath.Join(envsDir(cluster), name+".json")
+func envFilePath(cluster, profile, name string) string {
+	return filepath.Join(envsDir(cluster, profile), name+".json")
 }
 
 // saveEnv writes one cluster-default env var to disk atomically with
@@ -57,7 +62,7 @@ func envFilePath(cluster, name string) string {
 // against the conventional shell shape — empty / lowercase / dotted
 // names get bounced so the resulting filename and the env-var name
 // don't drift.
-func saveEnv(cluster string, e *StoredEnv) error {
+func saveEnv(cluster, profile string, e *StoredEnv) error {
 	if cluster == "" {
 		return fmt.Errorf("cluster is empty; run `agentry server use <name>` first")
 	}
@@ -67,7 +72,7 @@ func saveEnv(cluster string, e *StoredEnv) error {
 	if !isValidEnvName(e.Name) {
 		return fmt.Errorf("invalid env var name %q (must match [A-Z_][A-Z0-9_]*)", e.Name)
 	}
-	dir := envsDir(cluster)
+	dir := envsDir(cluster, profile)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
@@ -75,7 +80,7 @@ func saveEnv(cluster string, e *StoredEnv) error {
 	if err != nil {
 		return err
 	}
-	path := envFilePath(cluster, e.Name)
+	path := envFilePath(cluster, profile, e.Name)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
 		return err
@@ -89,8 +94,8 @@ func saveEnv(cluster string, e *StoredEnv) error {
 
 // loadEnv reads one stored env var. Returns (nil, nil) when the file
 // doesn't exist — "not staged" is a valid state.
-func loadEnv(cluster, name string) (*StoredEnv, error) {
-	raw, err := os.ReadFile(envFilePath(cluster, name))
+func loadEnv(cluster, profile, name string) (*StoredEnv, error) {
+	raw, err := os.ReadFile(envFilePath(cluster, profile, name))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -99,24 +104,24 @@ func loadEnv(cluster, name string) (*StoredEnv, error) {
 	}
 	var e StoredEnv
 	if err := json.Unmarshal(raw, &e); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", envFilePath(cluster, name), err)
+		return nil, fmt.Errorf("parse %s: %w", envFilePath(cluster, profile, name), err)
 	}
 	return &e, nil
 }
 
 // deleteEnv removes the on-disk file. Missing file is not an error.
-func deleteEnv(cluster, name string) error {
-	err := os.Remove(envFilePath(cluster, name))
+func deleteEnv(cluster, profile, name string) error {
+	err := os.Remove(envFilePath(cluster, profile, name))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
 }
 
-// listEnvs returns every stored env for a cluster, sorted by name so
-// `agentry env ls` is deterministic.
-func listEnvs(cluster string) ([]*StoredEnv, error) {
-	dir := envsDir(cluster)
+// listEnvs returns every stored env for a (cluster, profile),
+// sorted by name so `agentry env ls` is deterministic.
+func listEnvs(cluster, profile string) ([]*StoredEnv, error) {
+	dir := envsDir(cluster, profile)
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -130,7 +135,7 @@ func listEnvs(cluster string) ([]*StoredEnv, error) {
 			continue
 		}
 		name := strings.TrimSuffix(ent.Name(), ".json")
-		e, err := loadEnv(cluster, name)
+		e, err := loadEnv(cluster, profile, name)
 		if err != nil {
 			return nil, err
 		}
@@ -148,21 +153,37 @@ func listEnvs(cluster string) ([]*StoredEnv, error) {
 // sandbox_create, uses the live cluster (not the boot-time one), best
 // effort with stderr logging, never blocks the create on a partial
 // failure.
-func applyClusterEnvDefaults(getCluster func() string, hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
+func applyClusterEnvDefaults(getCtx func() (cluster, profile string), hc *http.Client) func(context.Context, mcp.SandboxInfo) error {
 	return func(ctx context.Context, info mcp.SandboxInfo) error {
-		if getCluster == nil {
+		if getCtx == nil {
 			return nil
 		}
-		cluster := getCluster()
+		cluster, profile := getCtx()
 		if cluster == "" {
 			return nil
 		}
-		envs, err := listEnvs(cluster)
+		envs, err := listEnvs(cluster, profile)
 		if err != nil {
 			return fmt.Errorf("list envs: %w", err)
 		}
-		if len(envs) == 0 {
-			return nil
+		// Stamp AGENTRY_PROFILE on every sandbox even when nothing
+		// else is staged — app code branching on prod-only features
+		// shouldn't depend on the operator having set other envs.
+		envs = append(envs, &StoredEnv{Name: "AGENTRY_PROFILE", Value: profile})
+		// When auth is enabled on this (cluster, profile), pull the
+		// state and stamp the sidecar's contract: AGENTRY_AUTH_ENABLED
+		// + the DB-URL pointer + the HMAC secret + each provider's
+		// client_id / client_secret. The sidecar inside the sandbox
+		// reads these at boot.
+		if authState, _ := loadAuthState(cluster, profile); authState != nil && authState.Enabled {
+			envs = append(envs,
+				&StoredEnv{Name: "AGENTRY_AUTH_ENABLED", Value: "true"},
+				&StoredEnv{Name: "AGENTRY_AUTH_DB", Value: authState.DBBinding},
+				&StoredEnv{Name: "AGENTRY_AUTH_SECRET", Value: authState.Secret},
+			)
+			for name, val := range authStateProviderEnv(authState) {
+				envs = append(envs, &StoredEnv{Name: name, Value: val})
+			}
 		}
 		var firstErr error
 		applied := 0

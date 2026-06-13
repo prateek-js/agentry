@@ -176,7 +176,7 @@ func TestServerListsExpectedTools(t *testing.T) {
 		// internal step of the dashboard's Deploy flow, not an LLM
 		// tool, since the pause/cleanup choreography around it only
 		// makes sense inside the full deploy).
-		"sandbox_create", "sandbox_list", "sandbox_delete", "agentry_auth_setup",
+		"sandbox_create", "sandbox_list", "sandbox_delete",
 		// Catalog + bindings + secrets (build/deploy MCP tools were
 		// removed; deploy lives in the dashboard).
 		"service_list", "service_bind", "secret_set", "secret_list",
@@ -191,13 +191,15 @@ func TestServerListsExpectedTools(t *testing.T) {
 		"project_create", "project_start", "project_stop", "project_list", "project_logs",
 		// Code interpreter (Jupyter)
 		"code_exec", "code_close",
+		// Observability probes + deployment status
+		"app_probe", "service_probe", "deployment_status",
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing tool %q", want)
 		}
 	}
-	if len(got) != 27 {
-		t.Errorf("tool count = %d; want 27 (added docs_read on top of the consolidated 26)", len(got))
+	if len(got) != 29 {
+		t.Errorf("tool count = %d; want 29 (26 + app_probe + service_probe + deployment_status)", len(got))
 	}
 }
 

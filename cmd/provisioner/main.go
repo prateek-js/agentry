@@ -38,6 +38,16 @@ func main() {
 
 	cfg := provisioner.DefaultConfig()
 
+	// Auto-provision the runtime API key (persisted under CertDir) so
+	// sandbox runtimes are locked to this provisioner without the operator
+	// setting anything — the install flow stays "paste the command, done".
+	provisioner.EnsureRuntimeAPIKey(&cfg)
+	if cfg.RuntimeAPIKey != "" {
+		log.Printf("provisioner: runtime auth ENABLED (sandbox API key auto-managed)")
+	} else {
+		log.Printf("provisioner: runtime auth DISABLED (no AGENTRY_CERT_DIR; local-dev posture)")
+	}
+
 	backend, err := newBackend(cfg)
 	if err != nil {
 		log.Fatalf("init backend %q: %v", cfg.Backend, err)

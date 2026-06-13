@@ -49,6 +49,19 @@ func main() {
 
 	env := loadEnv()
 
+	// DEV_MODE turns off mTLS, role-CN binding, org-SAN tenancy, the
+	// cross-org routing check, and the admin gate on the route table —
+	// it makes the bridge a fully open routing pivot. That's fine for
+	// local dev, but a single stray DEV_MODE=true in production would
+	// silently collapse the entire zero-trust model. Refuse to start if
+	// DEV_MODE is on while a production domain is configured.
+	if env.devMode && (env.tlsDomain != "" || env.deployDomain != "") {
+		log.Fatalf("bridge: refusing to start — DEV_MODE disables ALL mTLS/role/org checks, "+
+			"but a production domain is configured (tls=%q deploy=%q). "+
+			"Unset DEV_MODE for production, or unset the domains for local dev.",
+			env.tlsDomain, env.deployDomain)
+	}
+
 	var caCert *x509.Certificate
 	if !env.devMode {
 		var err error
@@ -124,13 +137,27 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 	caPool := x509.NewCertPool()
 	caPool.AddCert(caCert)
 
+	// Deploy registry created here (before the TLS config) so the SNI
+	// dispatcher can recognise registered custom-domain hosts and present
+	// a cert for them. Routes are pushed in via /api/deploy-routes.
+	deployReg := bridge.NewDeployRegistry()
+	b.AttachDeploy(deployReg)
+
 	tlsConf := &tls.Config{
-		// SNI dispatcher: deployment hostnames get the wildcard cert
-		// from certmagic; everything else (bridge.agentry.run) falls
-		// through to the existing HTTP-01 autocert manager.
+		// SNI dispatcher: deployment hostnames under the deploy domain
+		// get the wildcard cert; registered custom domains (BYO) get the
+		// wildcard too (CF's origin pull doesn't validate the cert name —
+		// see wildcardCertFor); everything else (bridge.agentry.run)
+		// falls through to the HTTP-01 autocert manager.
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if env.deployDomain != "" && hostMatchesDeployDomain(hello.ServerName, env.deployDomain) {
+			sni := hello.ServerName
+			if env.deployDomain != "" && hostMatchesDeployDomain(sni, env.deployDomain) {
 				return deployCerts.getCertificate(hello)
+			}
+			if deployCerts != nil {
+				if _, ok := deployReg.Lookup(sni); ok {
+					return deployCerts.wildcardCertFor(hello, env.deployDomain)
+				}
 			}
 			return mgr.GetCertificate(hello)
 		},
@@ -145,12 +172,8 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
 	}
 
-	// Bridge deploy registry. Routes are pushed in via the bridge's
-	// admin API (/api/deploy-routes) — the control plane keeps the
-	// authoritative list, the bridge holds an in-memory mirror for
-	// the hot path.
-	deployReg := bridge.NewDeployRegistry()
-	b.AttachDeploy(deployReg)
+	// (deployReg created above, before tlsConf, so the SNI dispatcher
+	// can see registered custom-domain hosts.)
 
 	// Handler dispatch:
 	//   - hostnames under deployDomain that have a registered route →
@@ -158,15 +181,26 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 	//   - hostnames under deployDomain with no route → static placeholder
 	//   - everything else (bridge.agentry.run) → existing mTLS-gated
 	//     broker handler
-	mainHandler := mtlsGate(b.Handler())
+	mainHandler := mtlsGate(b, b.Handler())
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain) {
-			host := r.Host
-			if i := strings.Index(host, ":"); i > 0 {
-				host = host[:i]
-			}
-			route, ok := deployReg.Lookup(host)
+		host := r.Host
+		if i := strings.Index(host, ":"); i > 0 {
+			host = host[:i]
+		}
+		// A request is deploy traffic if either (a) it's under our deploy
+		// domain (*.agentry.live), or (b) it's a custom domain the control
+		// plane has registered a route for. Lookup is the allowlist: a
+		// random Host with no registered route still falls through to the
+		// mTLS-gated bridge API and gets rejected (default-deny). This is
+		// what lets bring-your-own-domain hosts (app.customer.com) reach
+		// HandleDeployment even though they aren't under agentry.live.
+		route, ok := deployReg.Lookup(host)
+		underDeployDomain := env.deployDomain != "" && hostMatchesDeployDomain(r.Host, env.deployDomain)
+		if ok || underDeployDomain {
 			if !ok {
+				// Under the deploy domain but no route registered yet →
+				// the friendly placeholder. (Unregistered custom domains
+				// never reach here; they fall to the API path below.)
 				deploymentPlaceholder(w, r, env.deployDomain)
 				return
 			}
@@ -195,13 +229,22 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		TLSConfig:         tlsConf,
 		ReadHeaderTimeout: 30 * time.Second,
 		// No ReadTimeout/WriteTimeout — once handleTunnel hijacks, the
-		// session is owned by yamux for hours.
+		// session is owned by yamux for hours, and deploy responses can
+		// stream. ReadHeaderTimeout already bounds slow-header slowloris;
+		// IdleTimeout reaps idle keep-alive conns (it does NOT apply to a
+		// hijacked tunnel, so it's safe here).
+		IdleTimeout: 120 * time.Second,
 	}
 
 	httpSrv := &http.Server{
-		Addr:              env.httpListen,
-		Handler:           mgr.HTTPHandler(http.HandlerFunc(redirectToHTTPS(env.tlsDomain))),
-		ReadHeaderTimeout: 30 * time.Second,
+		Addr:    env.httpListen,
+		Handler: mgr.HTTPHandler(http.HandlerFunc(redirectToHTTPS(env.tlsDomain))),
+		// :80 only serves ACME challenges + redirects — nothing hijacks,
+		// nothing streams, so it gets full slow-client timeouts.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -228,7 +271,7 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 // Cert issuance used to live behind /api/discovery on the broker; in
 // agentry that endpoint moves to app.agentry.run, so the bridge no
 // longer needs to leave it exempt.
-func mtlsGate(inner http.Handler) http.Handler {
+func mtlsGate(b *bridge.Broker, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			inner.ServeHTTP(w, r)
@@ -236,6 +279,15 @@ func mtlsGate(inner http.Handler) http.Handler {
 		}
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 			http.Error(w, "client certificate required", http.StatusUnauthorized)
+			return
+		}
+		// Revocation: a deleted cluster/device's cert is valid (CA-signed,
+		// unexpired) but must no longer be trusted. The control plane
+		// pushes revoked CNs; reject the handshake before it reaches any
+		// handler. New tunnels are blocked immediately; an already-open
+		// session rides until it drops.
+		if b.IsRevoked(r.TLS.PeerCertificates[0].Subject.CommonName) {
+			http.Error(w, "client certificate revoked", http.StatusForbidden)
 			return
 		}
 		inner.ServeHTTP(w, r)
@@ -344,9 +396,9 @@ type envConfig struct {
 	// through the bridge with a wildcard cert provisioned via Cloudflare
 	// DNS-01. Without these the bridge keeps doing only its existing
 	// mTLS-gated work on tlsDomain.
-	deployDomain      string
+	deployDomain       string
 	deployCertCacheDir string
-	cfAPIToken        string
+	cfAPIToken         string
 
 	// Org-mode deploy auth. Bridge enforces "you must be signed into
 	// the route's org" by bouncing browser traffic to a handoff
@@ -358,11 +410,11 @@ type envConfig struct {
 
 func loadEnv() envConfig {
 	cfg := envConfig{
-		devMode:     envBool("DEV_MODE"),
-		tlsDomain:   os.Getenv("TLS_DOMAIN"),
-		tlsCacheDir: os.Getenv("TLS_CACHE_DIR"),
-		httpsListen: os.Getenv("HTTPS_LISTEN"),
-		httpListen:  os.Getenv("HTTP_LISTEN"),
+		devMode:            envBool("DEV_MODE"),
+		tlsDomain:          os.Getenv("TLS_DOMAIN"),
+		tlsCacheDir:        os.Getenv("TLS_CACHE_DIR"),
+		httpsListen:        os.Getenv("HTTPS_LISTEN"),
+		httpListen:         os.Getenv("HTTP_LISTEN"),
 		caCertURL:          os.Getenv("CA_CERT_URL"),
 		caCertPath:         os.Getenv("CA_CERT_PATH"),
 		deployDomain:       os.Getenv("DEPLOY_DOMAIN"),

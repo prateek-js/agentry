@@ -5,8 +5,13 @@ Operator-curated, bake-time documentation that lives at
 turn before reaching for tools — they describe the conventions and
 recipes that aren't obvious from the tool descriptions alone.
 
-## Two non-negotiable rules
+## Three non-negotiable rules
 
+0. **Read `CONTRACT.md` before writing code.** Five invariants that
+   apply to EVERY project kind: bind `$PORT` (never hard-code a
+   port), one project per sandbox, bind services before coding
+   against them, auth belongs to the platform sidecar, and platform
+   problems get REPORTED — never patched around from app code.
 1. **EVERY app runs as a managed project.** Whatever stack you pick,
    it goes through `project_create` → `project_start`. You DO NOT write
    `.sandbox-project.json` by hand and you DO NOT tell the user to run
@@ -39,6 +44,8 @@ These rules apply to every recipe below. They are not stack-specific.
 | "test the app I built", "browser tests", "screenshot the page" | (any kind) | `skills/webapp-testing/SKILL.md` |
 | "consistent brand voice", "design system across pages" | (any kind) | `skills/brand-guidelines/SKILL.md` |
 | User EXPLICITLY asked for a single-file HTML ("give me one HTML file I can email") | n/a — emit the artifact, no project | `skills/web-artifacts-builder/SKILL.md` |
+| User names a GitHub repo to work on ("fix bug in OWNER/REPO", "open a PR against …") | clone, then `kind` matches the repo's stack | `skills/github/SKILL.md` (precondition: `GITHUB_TOKEN` in env) |
+| "add login", "users need to sign in", "gate this behind a user account" — anything auth-shaped | (any kind) | `skills/auth/SKILL.md` (precondition: `AGENTRY_AUTH_ENABLED=true` in env; the authproxy sidecar handles login/signup/OAuth — your app reads `x-forwarded-*` headers, does NOT install next-auth / lucia / better-auth) |
 
 All paths produce code that follows `coding-style.md` (80-100 lines
 per file, feature-folder layout) and runs as the ONE managed project
@@ -47,6 +54,14 @@ discovery — not bare `command_start`).
 
 ## Available cheat-sheets
 
+- `CONTRACT.md` — the five cross-kind invariants. Read once per
+  sandbox, before any code.
+- `bridge.md` — URL / cookie / forwarded-header rules behind the
+  preview+deploy proxy. Applies to every kind; read before building
+  absolute URLs, cookies, or OAuth flows.
+- `services.md` — service binding table + the data-namespacing
+  patterns (AGENTRY_APP_NAME as db/schema/key prefix). Read before
+  any code that touches a bound service.
 - `coding-style.md` — house rules for the code you produce: 80-100
   lines per file, single responsibility, feature-folder layout.
 - `projects.md` — manifest schema reference + tier selection

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,7 +47,9 @@ func Register(server *mcp.Server, c *Client) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "sandbox_create",
 		Description: "Spin up a fresh isolated sandbox container. Returns `sandbox_url` (the runtime endpoint every other tool needs), `sandbox_id` (the ACTUAL allocated id — may differ from what you asked for; see below), `bindings` (services the operator has pre-wired into this sandbox — each entry lists the env var names you read at runtime), and `env` (NAMES of additional env vars / secrets already loaded in the sandbox; values are never returned). " +
-			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ BOTH the `bindings` AND `env` arrays from the RESPONSE before deciding any service or credential is missing. If a service is in `bindings`, your code reads the listed env vars verbatim — DO NOT bind it again, DO NOT spin up an in-process substitute. If a name like `JIRA_TOKEN` / `SLACK_BOT_TOKEN` / `STRIPE_SECRET_KEY` is in `env`, the value is already in process.env inside the sandbox — DO NOT ask the user to provide it, DO NOT prompt for it, just use it. When the user names a service by name (\"jira\", \"slack\", \"stripe\", \"openai\", …) ALWAYS scan both arrays for a matching token BEFORE saying it isn't configured. (2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
+			"FIRST-TOUCH CHECKLIST after a successful create: (1) READ BOTH the `bindings` AND `env` arrays from the RESPONSE before deciding any service or credential is missing. If a service is in `bindings`, your code reads the listed env vars verbatim — DO NOT bind it again, DO NOT spin up an in-process substitute. If a name like `JIRA_TOKEN` / `SLACK_BOT_TOKEN` / `STRIPE_SECRET_KEY` is in `env`, the value is already in process.env inside the sandbox — DO NOT ask the user to provide it, DO NOT prompt for it, just use it. When the user names a service by name (\"jira\", \"slack\", \"stripe\", \"openai\", …) ALWAYS scan both arrays for a matching token BEFORE saying it isn't configured. " +
+			"If `AGENTRY_AUTH_ENABLED` is in the `env` array, login/signup are wired by the authproxy sidecar — your app reads `x-forwarded-user/email/name/provider` headers and DOES NOT install next-auth, lucia, better-auth, or render its own /login page. Read skills/auth/SKILL.md before any auth-shaped UI. " +
+			"(2) `command_run \"cat /etc/sandbox/docs/README.md\"` to load the recipe router, then read the cheat-sheet matching what the user asked for (e.g. agent.md, app.md). " +
 			"Pass any descriptive `sandbox_id` (e.g. \"ecommerce-store\"). If that name is already taken by an unrelated sandbox, the server auto-allocates a fresh suffixed name (e.g. \"ecommerce-store-7f2a\") so you DON'T overwrite the existing one. " +
 			"ALWAYS use the `sandbox_id` from the RESPONSE for every follow-up tool call in this conversation — never the one you passed in. " +
 			"Set `reuse_existing: true` only when you genuinely want to attach to an existing sandbox by name (rare; typical use case is a CLI `attach` flow, not an LLM creating a new project).",
@@ -62,13 +65,6 @@ func Register(server *mcp.Server, c *Client) {
 		Name:        "sandbox_delete",
 		Description: "Tear down a sandbox by id. Always call when the user is done — sandboxes hold real Docker resources.",
 	}, sandboxDelete(c))
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "agentry_auth_setup",
-		Description: "Scaffolds production-ready user authentication (Better-Auth: email + password, real users table, signed HTTP-only session cookies) into the sandbox's current Next.js app. " +
-			"Use this tool whenever the user asks to \"add login\", \"set up auth\", \"let people sign up\", \"I need users\", \"make this require sign-in\", \"user passwords\", \"log in\", \"log out\", \"who's signed in\", or any request for account-based authentication. " +
-			"Two-phase, idempotent. First call (no `mode`) returns the detected framework, the available storage backends, and the user-facing question to relay; second call ({mode: \"none\" | \"sqlite\" | \"binding:postgres\" | \"binding:mongodb\"}) performs the deterministic scaffold and returns a summary of files written + commands_to_run + next_steps. Re-calling on an already-wired project returns the current config without re-scaffolding. " +
-			"Do NOT hand-roll authentication (bcrypt, argon2, JWT, custom cookies, in-memory user tables, localStorage sessions) in place of calling this tool — Better-Auth is the only supported auth path on agentry. OAuth (Google/GitHub), magic-link, and passkeys are not in this release; for those, tell the user \"those land next release; I'll wire email + password via agentry_auth_setup for now.\"",
-	}, authSetup(c))
 	// — Catalog (bindable external services + skills) ─────────────────
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "service_list",
@@ -96,10 +92,11 @@ func Register(server *mcp.Server, c *Client) {
 	//
 	// (Build + deploy tools removed. Deploy lives in the dashboard
 	// today; the LLM should tell the user to click Share for a quick
-	// dev preview or Deploy for a durable prod URL — see the
-	// server-instructions "access from the user's browser" block. A
-	// fresh MCP-driven deploy tool will land once we have a token-
-	// auth path from the MCP client to agentry-app.)
+	// dev preview or Deploy for a durable prod URL — that guidance
+	// lives in the server-instructions "DONE = SHARE INSTRUCTIONS"
+	// block in server.go. A fresh MCP-driven deploy tool will land
+	// once we have a token-auth path from the MCP client to
+	// agentry-app.)
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "command_run",
 		Description: "Run a BLOCKING shell command and wait for stdout/exit_code. Reuse `session_id` across calls for a persistent bash PTY (keeps cwd/env). " +
@@ -150,6 +147,7 @@ func Register(server *mcp.Server, c *Client) {
 		Name: "docs_read",
 		Description: "Read a baked-in operator cheat-sheet from /etc/sandbox/docs/. PREFER this over file_read or command_run (`cat`, `find`) when reaching for a doc — the docs are INSIDE the sandbox container, NOT on your host. NEVER run `find /` to locate them.\n\n" +
 			"Available names (you can omit the .md suffix):\n" +
+			"  • CONTRACT                               — the five invariants for EVERY kind (ports, services, auth, platform boundaries); read before coding\n" +
 			"  • README                                 — the recipe router (read first)\n" +
 			"  • coding-style                           — house code rules\n" +
 			"  • projects                               — project manifest schema\n" +
@@ -158,6 +156,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • streamlit                              — Streamlit recipe\n" +
 			"  • fastapi                                — FastAPI recipe\n" +
 			"  • python-script                          — long-running Python recipe\n" +
+			"  • bridge                                 — URL/cookie/origin rules behind the preview proxy (all kinds)\n" +
+			"  • services                               — service binding table + data-namespacing patterns (all kinds)\n" +
 			"  • skills/frontend-design                 — design principles; READ before any CSS/HTML/JSX\n" +
 			"  • skills/frontend-design/references/ai-tells     — AI-slop patterns to refuse\n" +
 			"  • skills/frontend-design/references/design-rules — hard typographic/color rules\n" +
@@ -166,7 +166,9 @@ func Register(server *mcp.Server, c *Client) {
 			"  • skills/theme-factory/themes/<theme>    — one of: arctic-frost, botanical-garden, desert-rose, forest-canopy, golden-hour, midnight-galaxy, modern-minimalist, ocean-depths, sunset-boulevard, tech-innovation\n" +
 			"  • skills/brand-guidelines                — brand consistency\n" +
 			"  • skills/webapp-testing                  — Playwright + screenshot testing\n" +
-			"  • skills/web-artifacts-builder           — single-file HTML artifacts",
+			"  • skills/web-artifacts-builder           — single-file HTML artifacts\n" +
+			"  • skills/github                          — work on existing GitHub repos (precondition: GITHUB_TOKEN in env)\n" +
+			"  • skills/auth                            — login / signup wired by the authproxy sidecar (precondition: AGENTRY_AUTH_ENABLED=true in env; your app reads x-forwarded-* headers and DOES NOT install next-auth / lucia / better-auth)",
 	}, docsRead(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "file_grep",
@@ -212,7 +214,8 @@ func Register(server *mcp.Server, c *Client) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "project_start",
 		Description: "Start the sandbox's managed project. Reads `/workspace/projects/<name>/.sandbox-project.json` (scaffolded by `project_create`). `restart=true` stop+starts. " +
-			"DEFAULT this over command_start for any server the user will touch more than once — bare command_start doesn't get auto-restart, port discovery, or log capture.",
+			"DEFAULT this over command_start for any server the user will touch more than once — bare command_start doesn't get auto-restart, port discovery, or log capture. " +
+			"PORT DISCIPLINE: your app must bind to `$PORT` from the runtime — never hard-code `--port N` in `start_command`. When `AGENTRY_AUTH_ENABLED=true` the authproxy sidecar binds the public port (3000) and your process gets `PORT=3001`. Hard-coding `--port 3000` causes `address already in use` because authproxy is already there. Login UI is at `/auth/login` (or `/auth/signin` alias); your app reads `x-forwarded-*` headers — don't install next-auth / lucia / better-auth.",
 	}, projectStart(c))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "project_stop",
@@ -224,8 +227,10 @@ func Register(server *mcp.Server, c *Client) {
 			"Self-check: after declaring you're done, this should show every project running with non-empty ports.",
 	}, projectList(c))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "project_logs",
-		Description: "Recent log buffer (~500 lines) for a managed project. Stdout and stderr interleaved in order.",
+		Name: "project_logs",
+		Description: "Recent log buffer (~500 lines) for a managed project. Stdout and stderr interleaved in order. " +
+			"Filter before it hits your context: `grep` (case-insensitive RE2 regex) keeps only matching lines — pass 'error|panic|exception|traceback' to pull just the failures out of a noisy server log. `tail_lines` caps how many lines come back (default 200). " +
+			"When a project shows unhealthy in project_list, call this with grep='error|fail|panic' FIRST instead of reading the whole buffer.",
 	}, projectLogs(c))
 
 	// — Code interpreter (Jupyter) ──────────────────────────────────────
@@ -240,6 +245,12 @@ func Register(server *mcp.Server, c *Client) {
 		Name:        "code_close",
 		Description: "Shut down a kernel context and free its memory. Idempotent. Call when you're done with a context — each kernel is a real Python process.",
 	}, codeClose(c))
+
+	// — Observability (probe the running app + bound services) ───────────
+	registerProbeTools(server, c)
+
+	// — Deployment status (read-only window into the control plane) ──────
+	registerDeploymentStatusTool(server, c)
 }
 
 // --- arg structs ----------------------------------------------------------
@@ -281,12 +292,6 @@ type secretSetArgs struct {
 
 type sandboxIDOnlyArgs struct {
 	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox id"`
-}
-
-type authSetupArgs struct {
-	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
-	Project    string `json:"project,omitempty" jsonschema:"project directory under /workspace/projects/. Default: 'app'. Most apps have one project so this can usually be omitted."`
-	Mode       string `json:"mode,omitempty" jsonschema:"empty = phase 1 (probe + return questions for the user); 'none' / 'sqlite' / 'binding:postgres' / 'binding:mongodb' = phase 2 (deterministic scaffold). Pass the value the user chose verbatim."`
 }
 
 type commandRunArgs struct {
@@ -401,6 +406,13 @@ type projectNameArgs struct {
 
 type sandboxURLOnlyArgs struct {
 	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+}
+
+type projectLogsArgs struct {
+	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	Name       string `json:"name" jsonschema:"project name (the directory under /workspace/projects containing .sandbox-project.json)"`
+	TailLines  int    `json:"tail_lines,omitempty" jsonschema:"return only the last N lines (after any grep filter). Default 200; the runtime buffer holds ~500. Use a small value (20-50) when you just want the latest error."`
+	Grep       string `json:"grep,omitempty" jsonschema:"RE2 regex; keep only log lines that match. Case-insensitive. Use to pull just the error/warn lines out of a noisy server log (e.g. 'error|panic|exception|traceback')."`
 }
 
 type codeExecArgs struct {
@@ -582,25 +594,6 @@ func serviceList(c *Client) mcp.ToolHandlerFor[serviceListArgs, any] {
 			return errResult(err.Error()), nil, nil
 		}
 		out := map[string]any{"entries": entries, "kind": kind}
-		return jsonResult(out), out, nil
-	}
-}
-
-func authSetup(c *Client) mcp.ToolHandlerFor[authSetupArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a authSetupArgs) (*mcp.CallToolResult, any, error) {
-		if a.SandboxURL == "" {
-			a.SandboxURL = c.LastSandboxURL()
-		}
-		if a.SandboxURL == "" {
-			return errResult("sandbox_url is required"), nil, nil
-		}
-		out, err := c.AuthSetup(ctx, a.SandboxURL, AuthSetupRequest{
-			Project: a.Project,
-			Mode:    a.Mode,
-		})
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
 		return jsonResult(out), out, nil
 	}
 }
@@ -986,20 +979,94 @@ func projectList(c *Client) mcp.ToolHandlerFor[sandboxURLOnlyArgs, any] {
 	}
 }
 
-func projectLogs(c *Client) mcp.ToolHandlerFor[projectNameArgs, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectNameArgs) (*mcp.CallToolResult, any, error) {
+func projectLogs(c *Client) mcp.ToolHandlerFor[projectLogsArgs, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, a projectLogsArgs) (*mcp.CallToolResult, any, error) {
 		if a.SandboxURL == "" {
 			a.SandboxURL = c.LastSandboxURL()
 		}
 		if a.SandboxURL == "" || a.Name == "" {
 			return errResult("sandbox_url and name are required"), nil, nil
 		}
-		out, err := c.ProjectLogs(ctx, a.SandboxURL, a.Name)
+		// Compile the grep up-front so a bad regex is a crisp tool error,
+		// not a silent no-op that returns the whole buffer.
+		var re *regexp.Regexp
+		if a.Grep != "" {
+			compiled, err := regexp.Compile("(?i)" + a.Grep)
+			if err != nil {
+				return errResult(fmt.Sprintf("grep is not a valid regex: %v", err)), nil, nil
+			}
+			re = compiled
+		}
+		// Ask the runtime for a generous buffer when we're going to grep
+		// (so the filter has material to work with), otherwise honor the
+		// caller's tail directly.
+		fetch := a.TailLines
+		if re != nil || fetch <= 0 {
+			fetch = 500
+		}
+		out, err := c.ProjectLogs(ctx, a.SandboxURL, a.Name, fetch)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		return jsonResult(out), out, nil
+		lines := extractLogLines(out)
+		if re != nil {
+			kept := lines[:0:0]
+			for _, ln := range lines {
+				if re.MatchString(ln) {
+					kept = append(kept, ln)
+				}
+			}
+			lines = kept
+		}
+		tail := a.TailLines
+		if tail <= 0 {
+			tail = 200
+		}
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+		result := map[string]any{
+			"name":           a.Name,
+			"lines":          lines,
+			"returned_lines": len(lines),
+		}
+		if re != nil {
+			result["grep"] = a.Grep
+		}
+		return jsonResult(result), result, nil
 	}
+}
+
+// extractLogLines pulls the []string log buffer out of the runtime's
+// project/logs envelope. The runtime nests it at data.lines; we also
+// accept a top-level lines key (defensive against envelope changes) and
+// coerce []any → []string. Returns an empty slice on any mismatch rather
+// than nil so downstream filtering/tailing is always safe.
+func extractLogLines(out map[string]any) []string {
+	pick := func(m map[string]any) ([]any, bool) {
+		if v, ok := m["lines"].([]any); ok {
+			return v, true
+		}
+		return nil, false
+	}
+	var raw []any
+	if data, ok := out["data"].(map[string]any); ok {
+		if v, ok := pick(data); ok {
+			raw = v
+		}
+	}
+	if raw == nil {
+		if v, ok := pick(out); ok {
+			raw = v
+		}
+	}
+	lines := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			lines = append(lines, s)
+		}
+	}
+	return lines
 }
 
 // --- code interpreter handlers ────────────────────────────────────────────

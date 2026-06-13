@@ -70,3 +70,31 @@ func TestBackoffStableWindowResets(t *testing.T) {
 		t.Errorf("after stable window got %s; want 100ms (reset)", got)
 	}
 }
+
+// Jitter keeps the delay in [Base*(1-Jitter), Base] on the first attempt
+// and varies across independent backoffs, so a fleet that dropped at the
+// same instant doesn't reconnect in lockstep.
+func TestBackoffJitterStaysInBandAndVaries(t *testing.T) {
+	cfg := BackoffConfig{Base: 2 * time.Second, Max: 5 * time.Minute, Jitter: 0.3}
+	lo, hi := 1400*time.Millisecond, 2*time.Second
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 32; i++ {
+		d := NewBackoff(cfg).Next()
+		if d < lo || d > hi {
+			t.Fatalf("jittered first delay %s outside [%s,%s]", d, lo, hi)
+		}
+		seen[d] = true
+	}
+	if len(seen) < 2 {
+		t.Error("jitter produced identical delays across 32 fresh backoffs")
+	}
+}
+
+// Zero Jitter (the default for raw configs) stays exact — the existing
+// deterministic tests rely on this.
+func TestBackoffNoJitterIsExact(t *testing.T) {
+	b := NewBackoff(BackoffConfig{Base: 100 * time.Millisecond, Max: time.Second})
+	if got := b.Next(); got != 100*time.Millisecond {
+		t.Fatalf("no-jitter first delay = %s; want exactly 100ms", got)
+	}
+}
