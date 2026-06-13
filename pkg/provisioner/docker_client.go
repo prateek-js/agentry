@@ -247,6 +247,11 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 	envVars := []string{
 		"SANDBOX_ID=" + spec.SandboxID,
 	}
+	if spec.RuntimeAPIKey != "" {
+		// Locks the runtime's shell/file/code-exec API to this provisioner:
+		// the runtime reads $SANDBOX_API_KEY and rejects calls without it.
+		envVars = append(envVars, "SANDBOX_API_KEY="+spec.RuntimeAPIKey)
+	}
 
 	containerCfg := &container.Config{
 		Image:        img,

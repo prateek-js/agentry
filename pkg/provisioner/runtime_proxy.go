@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentry/agentry/pkg/auth"
 	"github.com/agentry/agentry/pkg/tunnel"
 )
 
@@ -69,6 +70,15 @@ func (p *Provisioner) handleRuntimeProxy(w http.ResponseWriter, r *http.Request)
 			req.URL.Path = upstreamPath
 			req.URL.RawQuery = r.URL.RawQuery
 			req.Host = target.Host
+			// Authenticate to the runtime. The device's request is already
+			// authorized (it reached us through the bridge's mTLS gate); we
+			// present the provisioner's runtime key so the runtime — which
+			// requires it — accepts the proxied call. A client-supplied
+			// header is overwritten, never trusted.
+			req.Header.Del(auth.HeaderName)
+			if p.config.RuntimeAPIKey != "" {
+				req.Header.Set(auth.HeaderName, p.config.RuntimeAPIKey)
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			log.Printf("runtime proxy upstream error (sandbox=%s path=%s): %v",
