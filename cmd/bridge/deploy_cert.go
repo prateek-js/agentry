@@ -72,6 +72,24 @@ func (d *deployCertManager) getCertificate(hello *tls.ClientHelloInfo) (*tls.Cer
 	return d.cfg.GetCertificate(hello)
 }
 
+// wildcardCertFor returns the *.<deployDomain> cert regardless of the
+// client's SNI. Used for bring-your-own custom-domain origin pulls:
+// Cloudflare for SaaS terminates the customer's real cert at its edge,
+// then connects to us (the fallback origin) with SNI = the custom
+// hostname (e.g. me.wina.sh) — a name we can't hold a cert for. CF's
+// origin pull doesn't validate the cert name, so presenting the wildcard
+// just lets the handshake complete; routing still happens by Host. We
+// copy the hello and only rewrite ServerName so cipher/version
+// negotiation is unchanged.
+func (d *deployCertManager) wildcardCertFor(hello *tls.ClientHelloInfo, deployDomain string) (*tls.Certificate, error) {
+	if d == nil {
+		return nil, errors.New("deploy cert manager not configured")
+	}
+	h := *hello
+	h.ServerName = "origin." + deployDomain
+	return d.cfg.GetCertificate(&h)
+}
+
 // hostMatchesDeployDomain returns true for hosts under the deployment
 // apex (e.g. "sales-dash-abc.agentry.live" when deployDomain is
 // "agentry.live"). The apex itself doesn't match — only subdomains.
@@ -119,4 +137,3 @@ func deploymentPlaceholder(w http.ResponseWriter, r *http.Request, deployDomain 
      <code>sandbox_create</code> serve here automatically.</p>
 </div>`))
 }
-

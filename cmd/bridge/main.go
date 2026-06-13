@@ -137,13 +137,27 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 	caPool := x509.NewCertPool()
 	caPool.AddCert(caCert)
 
+	// Deploy registry created here (before the TLS config) so the SNI
+	// dispatcher can recognise registered custom-domain hosts and present
+	// a cert for them. Routes are pushed in via /api/deploy-routes.
+	deployReg := bridge.NewDeployRegistry()
+	b.AttachDeploy(deployReg)
+
 	tlsConf := &tls.Config{
-		// SNI dispatcher: deployment hostnames get the wildcard cert
-		// from certmagic; everything else (bridge.agentry.run) falls
-		// through to the existing HTTP-01 autocert manager.
+		// SNI dispatcher: deployment hostnames under the deploy domain
+		// get the wildcard cert; registered custom domains (BYO) get the
+		// wildcard too (CF's origin pull doesn't validate the cert name —
+		// see wildcardCertFor); everything else (bridge.agentry.run)
+		// falls through to the HTTP-01 autocert manager.
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if env.deployDomain != "" && hostMatchesDeployDomain(hello.ServerName, env.deployDomain) {
+			sni := hello.ServerName
+			if env.deployDomain != "" && hostMatchesDeployDomain(sni, env.deployDomain) {
 				return deployCerts.getCertificate(hello)
+			}
+			if deployCerts != nil {
+				if _, ok := deployReg.Lookup(sni); ok {
+					return deployCerts.wildcardCertFor(hello, env.deployDomain)
+				}
 			}
 			return mgr.GetCertificate(hello)
 		},
@@ -158,12 +172,8 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
 	}
 
-	// Bridge deploy registry. Routes are pushed in via the bridge's
-	// admin API (/api/deploy-routes) — the control plane keeps the
-	// authoritative list, the bridge holds an in-memory mirror for
-	// the hot path.
-	deployReg := bridge.NewDeployRegistry()
-	b.AttachDeploy(deployReg)
+	// (deployReg created above, before tlsConf, so the SNI dispatcher
+	// can see registered custom-domain hosts.)
 
 	// Handler dispatch:
 	//   - hostnames under deployDomain that have a registered route →
