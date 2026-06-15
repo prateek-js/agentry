@@ -18,11 +18,26 @@ import (
 	"github.com/agentry/agentry/pkg/telemetry"
 )
 
-const provisionerVersion = "1.0.0"
+// provisionerVersion is injected at build time via ldflags
+// (-X main.provisionerVersion=<release>). Defaults to "dev" for local
+// builds. Reported on GET /api/version and used by the dashboard's
+// "Update server" panel.
+var provisionerVersion = "dev"
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Printf("ad-sandbox provisioner starting (pid=%d)", os.Getpid())
+
+	// Self-update swapper mode: when started by an in-progress update
+	// (AGENTRY_SELFUPDATE_SWAP=1) this process is the detached updater,
+	// not the server — it recreates the provisioner container on the new
+	// image and exits. Must run BEFORE any normal startup.
+	if provisioner.SelfUpdateSwapRequested() {
+		provisioner.RunSelfUpdateSwap()
+		return
+	}
+
+	provisioner.Version = provisionerVersion
+	log.Printf("ad-sandbox provisioner starting (pid=%d version=%s)", os.Getpid(), provisionerVersion)
 
 	telCtx, telCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	shutdown, err := telemetry.Init(telCtx, telemetry.ConfigFromEnv("agentry-provisioner", provisionerVersion))

@@ -13,6 +13,12 @@ LANDING_HOST ?= root@188.34.177.4
 RUNTIME_IMG     := ghcr.io/agentry-ai/runtime:latest
 PROVISIONER_IMG := ghcr.io/agentry-ai/sandbox-provisioner:latest
 
+# Provisioner build version — stamped into the binary AND published to
+# the landing host as provisioner-latest.txt, which the control plane
+# reads to tell the dashboard "update available". Computed locally
+# (the remote build host has no .git). Override to pin.
+PROV_VERSION ?= $(shell date -u +%Y.%m.%d)-$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
@@ -59,9 +65,13 @@ sync-src:
 
 .PHONY: provisioner-deploy
 provisioner-deploy: sync-src
-	@echo "→ building provisioner image on $(PROV_HOST)"
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'cd /root/agentry-src && docker build -f docker/Dockerfile.provisioner -t $(PROVISIONER_IMG) .'
+	@echo "→ building provisioner image on $(PROV_HOST) (version=$(PROV_VERSION))"
+	ssh -i $(SSH_KEY) $(PROV_HOST) 'cd /root/agentry-src && docker build -f docker/Dockerfile.provisioner --build-arg PROVISIONER_VERSION=$(PROV_VERSION) -t $(PROVISIONER_IMG) .'
 	ssh -i $(SSH_KEY) $(PROV_HOST) 'docker push $(PROVISIONER_IMG)'
+	@echo "→ publishing latest version marker + update.sh for the dashboard update check"
+	ssh -i $(SSH_KEY) $(LANDING_HOST) 'printf "%s" "$(PROV_VERSION)" > /var/www/agentry/provisioner-latest.txt && chmod a+r /var/www/agentry/provisioner-latest.txt'
+	scp -i $(SSH_KEY) -q scripts/update.sh $(LANDING_HOST):/var/www/agentry/update.sh
+	ssh -i $(SSH_KEY) $(LANDING_HOST) 'chmod a+r /var/www/agentry/update.sh'
 	@# docker restart REUSES the existing container's image digest —
 	@# so it'd silently keep running the OLD binary. We have to stop,
 	@# remove, then `docker run` from the freshly-tagged image. Mounts

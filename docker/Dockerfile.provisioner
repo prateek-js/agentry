@@ -44,12 +44,15 @@
 
 FROM golang:1.26-alpine AS builder
 WORKDIR /build
+# Build version stamped into the provisioner (reported on /api/version,
+# compared by the dashboard's update panel). Passed via --build-arg.
+ARG PROVISIONER_VERSION=dev
 # Cache dep downloads as a separate layer.
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" \
+    go build -trimpath -ldflags="-s -w -X main.provisionerVersion=${PROVISIONER_VERSION}" \
     -o /provisioner ./cmd/provisioner && \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" \

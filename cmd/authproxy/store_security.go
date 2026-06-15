@@ -25,7 +25,7 @@ func (s *sqlStore) UpdatePassword(ctx context.Context, userID, newPassword strin
 	}
 	// Reset lock state on a successful password change — a reset is a
 	// legitimate recovery, so we don't want the account to stay locked.
-	q := rebind(s.kind, `UPDATE agentry_users
+	q := s.sql(`UPDATE agentry_users
         SET password_hash = ?, failed_attempts = 0, locked_until = NULL
         WHERE id = ?`)
 	res, err := s.db.ExecContext(ctx, q, string(hash), userID)
@@ -39,7 +39,7 @@ func (s *sqlStore) UpdatePassword(ctx context.Context, userID, newPassword strin
 }
 
 func (s *sqlStore) MarkEmailVerified(ctx context.Context, userID string) error {
-	q := rebind(s.kind, `UPDATE agentry_users SET email_verified = ? WHERE id = ?`)
+	q := s.sql(`UPDATE agentry_users SET email_verified = ? WHERE id = ?`)
 	if _, err := s.db.ExecContext(ctx, q, true, userID); err != nil {
 		return fmt.Errorf("mark verified: %w", err)
 	}
@@ -50,10 +50,10 @@ func (s *sqlStore) RecordLoginFailure(ctx context.Context, userID string, attemp
 	var q string
 	var args []any
 	if lockedUntil.IsZero() {
-		q = rebind(s.kind, `UPDATE agentry_users SET failed_attempts = ?, locked_until = NULL WHERE id = ?`)
+		q = s.sql(`UPDATE agentry_users SET failed_attempts = ?, locked_until = NULL WHERE id = ?`)
 		args = []any{attempts, userID}
 	} else {
-		q = rebind(s.kind, `UPDATE agentry_users SET failed_attempts = ?, locked_until = ? WHERE id = ?`)
+		q = s.sql(`UPDATE agentry_users SET failed_attempts = ?, locked_until = ? WHERE id = ?`)
 		args = []any{attempts, lockedUntil.UTC(), userID}
 	}
 	if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
@@ -63,7 +63,7 @@ func (s *sqlStore) RecordLoginFailure(ctx context.Context, userID string, attemp
 }
 
 func (s *sqlStore) ResetLoginAttempts(ctx context.Context, userID string) error {
-	q := rebind(s.kind, `UPDATE agentry_users SET failed_attempts = 0, locked_until = NULL WHERE id = ?`)
+	q := s.sql(`UPDATE agentry_users SET failed_attempts = 0, locked_until = NULL WHERE id = ?`)
 	if _, err := s.db.ExecContext(ctx, q, userID); err != nil {
 		return fmt.Errorf("reset login attempts: %w", err)
 	}
@@ -74,10 +74,10 @@ func (s *sqlStore) CreateEmailToken(ctx context.Context, userID, purpose, tokenH
 	// Invalidate any outstanding tokens of the same purpose for this user
 	// first, so "send me another reset link" doesn't leave the previous
 	// one live. Best-effort — the new token works regardless.
-	del := rebind(s.kind, `DELETE FROM agentry_email_tokens WHERE user_id = ? AND purpose = ?`)
+	del := s.sql(`DELETE FROM agentry_email_tokens WHERE user_id = ? AND purpose = ?`)
 	_, _ = s.db.ExecContext(ctx, del, userID, purpose)
 
-	q := rebind(s.kind, `INSERT INTO agentry_email_tokens (token_hash, user_id, purpose, expires_at, created_at)
+	q := s.sql(`INSERT INTO agentry_email_tokens (token_hash, user_id, purpose, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?)`)
 	if _, err := s.db.ExecContext(ctx, q, tokenHash, userID, purpose, expiresAt.UTC(), time.Now().UTC()); err != nil {
 		return fmt.Errorf("create email token: %w", err)
@@ -91,7 +91,7 @@ func (s *sqlStore) ConsumeEmailToken(ctx context.Context, purpose, tokenHash str
 	// token was already consumed, expired, or never existed — all the
 	// same opaque ErrTokenInvalid to the caller.
 	now := time.Now().UTC()
-	upd := rebind(s.kind, `UPDATE agentry_email_tokens
+	upd := s.sql(`UPDATE agentry_email_tokens
         SET used_at = ?
         WHERE token_hash = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?`)
 	res, err := s.db.ExecContext(ctx, upd, now, tokenHash, purpose, now)
@@ -103,7 +103,7 @@ func (s *sqlStore) ConsumeEmailToken(ctx context.Context, purpose, tokenHash str
 	}
 	// The token was valid; fetch its owner.
 	var userID string
-	q := rebind(s.kind, `SELECT user_id FROM agentry_email_tokens WHERE token_hash = ?`)
+	q := s.sql(`SELECT user_id FROM agentry_email_tokens WHERE token_hash = ?`)
 	if err := s.db.QueryRowContext(ctx, q, tokenHash).Scan(&userID); err != nil {
 		return "", fmt.Errorf("token owner lookup: %w", err)
 	}

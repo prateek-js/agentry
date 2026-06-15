@@ -50,7 +50,7 @@ type mongoStore struct {
 
 // openMongoStore dials mongo, picks the database, ensures indexes,
 // returns the Store. Caller owns Close().
-func openMongoStore(url string) (Store, error) {
+func openMongoStore(url, suffix string) (Store, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -66,8 +66,15 @@ func openMongoStore(url string) (Store, error) {
 
 	dbName := databaseFromURI(url)
 	db := client.Database(dbName)
-	coll := db.Collection(mongoCollection)
-	tokens := db.Collection(mongoTokenCollection)
+	// Per-app collections — see appSuffix. Two apps sharing the same
+	// Mongo binding never share a users collection.
+	collName, tokenName := mongoCollection, mongoTokenCollection
+	if suffix != "" {
+		collName = mongoCollection + "_" + suffix
+		tokenName = mongoTokenCollection + "_" + suffix
+	}
+	coll := db.Collection(collName)
+	tokens := db.Collection(tokenName)
 
 	s := &mongoStore{client: client, coll: coll, tokens: tokens}
 	if err := s.ensureIndexes(ctx); err != nil {

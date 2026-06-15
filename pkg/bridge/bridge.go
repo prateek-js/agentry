@@ -154,6 +154,10 @@ func (b *Broker) Handler() http.Handler {
 	// ids. Both proxy straight through to the provisioner's /api/gc*.
 	mux.HandleFunc("GET /api/clusters/{id}/gc/candidates", b.handleClusterGCCandidates)
 	mux.HandleFunc("POST /api/clusters/{id}/gc", b.handleClusterGC)
+	// Provisioner self-update: report the running version, and trigger an
+	// in-place upgrade of the provisioner container on the cluster host.
+	mux.HandleFunc("GET /api/clusters/{id}/version", b.handleClusterVersion)
+	mux.HandleFunc("POST /api/clusters/{id}/update", b.handleClusterUpdate)
 	mux.HandleFunc("GET /api/deploy-routes", b.handleDeployRoutesGet)
 	mux.HandleFunc("PUT /api/deploy-routes", b.handleDeployRoutesPut)
 	mux.HandleFunc("PUT /api/revoked-cns", b.handleRevokedCNsPut)
@@ -405,6 +409,14 @@ func (b *Broker) handleClusterGCCandidates(w http.ResponseWriter, r *http.Reques
 
 func (b *Broker) handleClusterGC(w http.ResponseWriter, r *http.Request) {
 	b.proxyToCluster(w, r, r.PathValue("id"), "/api/gc")
+}
+
+func (b *Broker) handleClusterVersion(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/version")
+}
+
+func (b *Broker) handleClusterUpdate(w http.ResponseWriter, r *http.Request) {
+	b.proxyToCluster(w, r, r.PathValue("id"), "/api/update")
 }
 
 // proxyToCluster is the shared reverse-proxy plumbing for any admin
