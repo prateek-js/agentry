@@ -397,6 +397,12 @@ func (p *Provisioner) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/gc/candidates", p.handleGCCandidates)
 	mux.HandleFunc("POST /api/gc", p.handleGC)
 
+	// Self-update — report the running build version, and pull+recreate
+	// this provisioner container onto the latest image. Surfaced on the
+	// dashboard's server detail page next to GC.
+	mux.HandleFunc("GET /api/version", p.handleVersion)
+	mux.HandleFunc("POST /api/update", p.handleUpdate)
+
 	// Catch-all reverse-proxy: /api/sandboxes/{id}/runtime/* forwards
 	// to the named sandbox's runtime. This is what makes runtime
 	// tools reachable through the broker tunnel — the runtime port
