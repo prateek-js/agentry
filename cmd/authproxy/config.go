@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -47,10 +51,24 @@ import (
 //   AGENTRY_AUTH_DEBUG     "1" to dump config (with secrets redacted)
 //                          on startup. Default off.
 type Config struct {
-	Mode      string // "passthrough" or "agentry"
-	DBKind    string // "postgres" | "mysql"
-	DBURL     string
-	Secret    string
+	Mode   string // "passthrough" or "agentry"
+	DBKind string // "postgres" | "mysql"
+	DBURL  string
+	// Secret is the PER-APP signing key — derived from the shared
+	// AGENTRY_AUTH_SECRET mixed with AppID. Used for session cookies,
+	// CSRF tokens, and OAuth state so one app can't accept another
+	// app's cookie even though they share the root secret.
+	Secret string
+	// IdentitySecret is the shared root AGENTRY_AUTH_SECRET, used ONLY
+	// to sign the X-Forwarded-Sig identity header — apps verify that
+	// against AGENTRY_AUTH_SECRET, which they have in env. (Not a
+	// cross-app vector: inbound identity headers are always stripped.)
+	IdentitySecret string
+	// AppID uniquely + stably identifies this app (deployment id or
+	// sandbox id). AppSuffix is its DB-safe table-name suffix. Together
+	// they isolate every app's users into its own table.
+	AppID     string
+	AppSuffix string
 	Port      string
 	Upstream  string
 	Providers map[string]ProviderConfig
@@ -125,13 +143,28 @@ func loadConfig() (*Config, error) {
 		return nil, errors.New("no DB URL found in env (checked DATABASE_URL, POSTGRES_URL, MYSQL_URL, MONGODB_URI, MONGO_URL); is the service binding intact?")
 	}
 
-	cfg.Secret = os.Getenv("AGENTRY_AUTH_SECRET")
-	if cfg.Secret == "" {
+	root := os.Getenv("AGENTRY_AUTH_SECRET")
+	if root == "" {
 		return nil, errors.New("AGENTRY_AUTH_SECRET is empty (set by `agentry auth enable`); refusing to start in auth mode without an HMAC key")
 	}
-	if len(cfg.Secret) < 32 {
-		return nil, fmt.Errorf("AGENTRY_AUTH_SECRET is too short (%d hex chars; want at least 32 = 16 bytes)", len(cfg.Secret))
+	if len(root) < 32 {
+		return nil, fmt.Errorf("AGENTRY_AUTH_SECRET is too short (%d hex chars; want at least 32 = 16 bytes)", len(root))
 	}
+	cfg.IdentitySecret = root
+
+	// Per-app isolation. Every app (one deployment, or one sandbox) gets
+	// its own users table and its own session-signing key, both derived
+	// from a stable, unique app id. Without this, every auth app sharing
+	// a DB binding would write to one `agentry_users` table AND — because
+	// sessions are stateless HMACs — accept each other's session cookies.
+	cfg.AppID = appIDFromEnv()
+	if cfg.AppID == "" {
+		log.Printf("authproxy: WARNING — no AGENTRY_APP_ID / AGENTRY_APP_NAME / SANDBOX_ID in env; " +
+			"auth state will NOT be isolated per app. Set AGENTRY_APP_ID to a unique value.")
+		cfg.AppID = "default"
+	}
+	cfg.AppSuffix = appSuffix(cfg.AppID)
+	cfg.Secret = deriveAppSecret(root, cfg.AppID)
 
 	for _, name := range []string{"google", "github", "microsoft", "apple", "generic-oidc"} {
 		if p, ok := readProviderEnv(name); ok {
@@ -151,6 +184,39 @@ func loadConfig() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// appIDFromEnv finds the stable, unique identifier for this app. The
+// control plane stamps AGENTRY_APP_ID = deployment id on deployments;
+// the provisioner stamps it (and SANDBOX_ID) on sandboxes. AGENTRY_APP_NAME
+// is a last-resort fallback only — it's a human slug that can collide
+// between apps, so it's used solely to avoid a hard failure.
+func appIDFromEnv() string {
+	for _, k := range []string{"AGENTRY_APP_ID", "AGENTRY_APP_NAME", "SANDBOX_ID"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// appSuffix turns an app id into a short, DB-safe, collision-resistant
+// table-name suffix. Hashing keeps it bounded and guarantees the result
+// is `[a-f0-9]+` (safe to interpolate into a table name — it can never
+// be SQL).
+func appSuffix(appID string) string {
+	sum := sha256.Sum256([]byte(appID))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// deriveAppSecret mixes the shared root secret with the app id so each
+// app signs sessions/CSRF/OAuth-state with a key no other app can
+// reproduce — even though they all share AGENTRY_AUTH_SECRET.
+func deriveAppSecret(root, appID string) string {
+	mac := hmac.New(sha256.New, []byte(root))
+	mac.Write([]byte("agentry-app-secret:"))
+	mac.Write([]byte(appID))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func defaultPort() string {

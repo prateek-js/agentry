@@ -129,8 +129,16 @@ func proxyHandler(cfg *Config, secret string) http.Handler {
 			return
 		}
 
-		// 3. Inject signed identity.
-		injectIdentityHeaders(r.Header, session, secret)
+		// 3. Inject signed identity. Signed with the ROOT secret (not the
+		// per-app session secret) because the upstream app verifies
+		// X-Forwarded-Sig against AGENTRY_AUTH_SECRET, which it has in env.
+		// This isn't a cross-app vector: inbound identity headers are
+		// always stripped (step 1), so only this proxy can inject them.
+		identitySecret := cfg.IdentitySecret
+		if identitySecret == "" {
+			identitySecret = secret
+		}
+		injectIdentityHeaders(r.Header, session, identitySecret)
 		setForwardingMetadata(r)
 		rp.ServeHTTP(w, r)
 	})

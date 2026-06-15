@@ -130,10 +130,11 @@ func buildMux(cfg *Config) (*http.ServeMux, func(), error) {
 		mux.Handle("/", proxyHandler(cfg, ""))
 		return mux, nil, nil
 	case "agentry":
-		store, err := openStore(cfg.DBKind, cfg.DBURL)
+		store, err := openStore(cfg.DBKind, cfg.DBURL, cfg.AppSuffix)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open store: %w", err)
 		}
+		log.Printf("authproxy: auth state isolated to app=%q (table suffix=%s)", cfg.AppID, cfg.AppSuffix)
 		teardown := func() {
 			if err := store.Close(); err != nil {
 				log.Printf("authproxy: store.Close: %v", err)

@@ -90,14 +90,14 @@ var ErrTokenInvalid = errors.New("token invalid or expired")
 // exists. Caller is responsible for calling Close() on shutdown.
 // Family is "postgres", "mysql", or "mongo" — anything else is the
 // caller's bug.
-func openStore(family, url string) (Store, error) {
+func openStore(family, url, suffix string) (Store, error) {
 	switch family {
 	case "postgres":
 		db, err := sql.Open("pgx", url)
 		if err != nil {
 			return nil, fmt.Errorf("open postgres: %w", err)
 		}
-		s := &sqlStore{db: db, kind: "postgres"}
+		s := &sqlStore{db: db, kind: "postgres", users: usersTable(suffix), tokens: tokensTable(suffix)}
 		if err := s.migrate(); err != nil {
 			_ = db.Close()
 			return nil, err
@@ -108,17 +108,34 @@ func openStore(family, url string) (Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open mysql: %w", err)
 		}
-		s := &sqlStore{db: db, kind: "mysql"}
+		s := &sqlStore{db: db, kind: "mysql", users: usersTable(suffix), tokens: tokensTable(suffix)}
 		if err := s.migrate(); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
 		return s, nil
 	case "mongo", "mongodb":
-		return openMongoStore(url)
+		return openMongoStore(url, suffix)
 	default:
 		return nil, fmt.Errorf("unsupported DB family %q", family)
 	}
+}
+
+// usersTable / tokensTable build the per-app table names. An empty
+// suffix (shouldn't happen — config always sets one) falls back to the
+// legacy unsuffixed names so behaviour is well-defined.
+func usersTable(suffix string) string {
+	if suffix == "" {
+		return "agentry_users"
+	}
+	return "agentry_users_" + suffix
+}
+
+func tokensTable(suffix string) string {
+	if suffix == "" {
+		return "agentry_email_tokens"
+	}
+	return "agentry_email_tokens_" + suffix
 }
 
 // sqlNoRows is the SQL sentinel mongo's NoDocuments maps to, so the
@@ -131,9 +148,28 @@ var sqlNoRows = sql.ErrNoRows
 type sqlStore struct {
 	db   *sql.DB
 	kind string
+	// Per-app table names — "agentry_users_<suffix>" /
+	// "agentry_email_tokens_<suffix>". The suffix is a hash of the app
+	// id (see appSuffix), so two apps sharing a DB binding never share a
+	// users table. tbl() rewrites the canonical names in every query.
+	users  string
+	tokens string
 }
 
 func (s *sqlStore) Close() error { return s.db.Close() }
+
+// tbl rewrites the canonical table names in a query to this app's
+// per-app names. The suffix is hash-derived (`[a-f0-9]{16}`), so the
+// interpolation can never be SQL injection.
+func (s *sqlStore) tbl(q string) string {
+	q = strings.ReplaceAll(q, "agentry_email_tokens", s.tokens)
+	q = strings.ReplaceAll(q, "agentry_users", s.users)
+	return q
+}
+
+// sql is the one wrapper every CRUD query goes through: per-app table
+// rewrite, then placeholder rebind for the driver family.
+func (s *sqlStore) sql(q string) string { return rebind(s.kind, s.tbl(q)) }
 
 // migrate runs CREATE TABLE IF NOT EXISTS — idempotent, runs on every
 // boot. We don't have a migration framework because we don't (yet)
@@ -165,13 +201,14 @@ func (s *sqlStore) migrate() error {
             created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`
 	}
-	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+	if _, err := s.db.ExecContext(ctx, s.tbl(ddl)); err != nil {
 		return fmt.Errorf("migrate %s: %w", s.kind, err)
 	}
 	// Provider+ID composite uniqueness — separate from the email
 	// unique so two providers can each have the same user (linked
-	// accounts).
-	idxDDL := `CREATE INDEX IF NOT EXISTS agentry_users_provider_idx ON agentry_users (provider, provider_id)`
+	// accounts). The index name is per-app too (derived from the table
+	// name) so two apps in one DB don't collide on CREATE INDEX.
+	idxDDL := s.tbl(`CREATE INDEX IF NOT EXISTS agentry_users_provider_idx ON agentry_users (provider, provider_id)`)
 	if s.kind == "mysql" {
 		// MySQL doesn't accept IF NOT EXISTS on CREATE INDEX in all
 		// versions. Try it; on failure, swallow because the index
@@ -211,7 +248,7 @@ func (s *sqlStore) migrateSecurity(ctx context.Context) error {
 		}
 	}
 	for _, ddl := range addCols {
-		if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		if _, err := s.db.ExecContext(ctx, s.tbl(ddl)); err != nil {
 			// On mysql a re-run hits "Duplicate column name" (error
 			// 1060) — that's the idempotent path, not a failure. Only a
 			// non-duplicate error is fatal.
@@ -243,7 +280,7 @@ func (s *sqlStore) migrateSecurity(ctx context.Context) error {
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`
 	}
-	if _, err := s.db.ExecContext(ctx, tokenDDL); err != nil {
+	if _, err := s.db.ExecContext(ctx, s.tbl(tokenDDL)); err != nil {
 		return fmt.Errorf("migrate email tokens (%s): %w", s.kind, err)
 	}
 	return nil
@@ -289,7 +326,7 @@ func (s *sqlStore) CreateUserPassword(ctx context.Context, email, password, name
 		Provider:     "password",
 		CreatedAt:    time.Now().UTC(),
 	}
-	q := rebind(s.kind, `INSERT INTO agentry_users (id, email, password_hash, name, provider, provider_id, created_at)
+	q := s.sql(`INSERT INTO agentry_users (id, email, password_hash, name, provider, provider_id, created_at)
                          VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if _, err := s.db.ExecContext(ctx, q, u.ID, u.Email, u.PasswordHash, u.Name, u.Provider, "", u.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
@@ -307,7 +344,7 @@ func (s *sqlStore) CreateUserPassword(ctx context.Context, email, password, name
 // wrong" defence.
 func (s *sqlStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	q := rebind(s.kind, `SELECT id, email, password_hash, name, provider, provider_id, created_at,
+	q := s.sql(`SELECT id, email, password_hash, name, provider, provider_id, created_at,
                                 email_verified, failed_attempts, locked_until
                           FROM agentry_users WHERE email = ?`)
 	row := s.db.QueryRowContext(ctx, q, email)
@@ -333,7 +370,7 @@ func (s *sqlStore) UpsertUserFromOAuth(ctx context.Context, provider, providerID
 
 	// Try provider lookup first — most reliable signal that "this is
 	// the same person as last time."
-	q := rebind(s.kind, `SELECT id, email, password_hash, name, provider, provider_id, created_at
+	q := s.sql(`SELECT id, email, password_hash, name, provider, provider_id, created_at
                           FROM agentry_users WHERE provider = ? AND provider_id = ?`)
 	var u User
 	err := s.db.QueryRowContext(ctx, q, provider, providerID).Scan(
@@ -341,7 +378,7 @@ func (s *sqlStore) UpsertUserFromOAuth(ctx context.Context, provider, providerID
 	if err == nil {
 		// Refresh name on every login.
 		if name != "" && name != u.Name {
-			upd := rebind(s.kind, `UPDATE agentry_users SET name = ? WHERE id = ?`)
+			upd := s.sql(`UPDATE agentry_users SET name = ? WHERE id = ?`)
 			_, _ = s.db.ExecContext(ctx, upd, name, u.ID)
 			u.Name = name
 		}
@@ -354,13 +391,13 @@ func (s *sqlStore) UpsertUserFromOAuth(ctx context.Context, provider, providerID
 	// Then by email. Lets the same human have linked accounts —
 	// signs up with password, later "logs in with Google" with the
 	// same email, ends up on the same row.
-	q = rebind(s.kind, `SELECT id, email, password_hash, name, provider, provider_id, created_at
+	q = s.sql(`SELECT id, email, password_hash, name, provider, provider_id, created_at
                        FROM agentry_users WHERE email = ?`)
 	err = s.db.QueryRowContext(ctx, q, email).Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Provider, &u.ProviderID, &u.CreatedAt)
 	if err == nil {
 		// Attach the OAuth identity to the existing row.
-		upd := rebind(s.kind, `UPDATE agentry_users SET provider = ?, provider_id = ?, name = ?
+		upd := s.sql(`UPDATE agentry_users SET provider = ?, provider_id = ?, name = ?
                                WHERE id = ?`)
 		if _, e := s.db.ExecContext(ctx, upd, provider, providerID, name, u.ID); e != nil {
 			return nil, e
@@ -391,7 +428,7 @@ func (s *sqlStore) UpsertUserFromOAuth(ctx context.Context, provider, providerID
 		ProviderID: providerID,
 		CreatedAt:  time.Now().UTC(),
 	}
-	ins := rebind(s.kind, `INSERT INTO agentry_users (id, email, password_hash, name, provider, provider_id, created_at)
+	ins := s.sql(`INSERT INTO agentry_users (id, email, password_hash, name, provider, provider_id, created_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if _, err := s.db.ExecContext(ctx, ins, u.ID, u.Email, "", u.Name, u.Provider, u.ProviderID, u.CreatedAt); err != nil {
 		return nil, fmt.Errorf("insert oauth user: %w", err)
