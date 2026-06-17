@@ -109,6 +109,11 @@ type Provisioner struct {
 	// (where nothing is actually listening on NodeHost:nodePort)
 	// override this with a no-op.
 	readyProbe func(ctx context.Context, sandboxURL string) error
+
+	// analytics emits sandbox create/delete usage metrics to PostHog.
+	// nil (no-op) unless POSTHOG_API_KEY is set. Sandbox lifecycle is
+	// only observable here — it never reaches the control plane.
+	analytics *analytics
 }
 
 // Backend is the plugin seam between the provisioner control plane and a
@@ -193,6 +198,7 @@ func NewWithKey(cfg Config, backend Backend, apiKey string) *Provisioner {
 		readyProbe: func(ctx context.Context, url string) error {
 			return waitPortReachable(ctx, url, 10*time.Second)
 		},
+		analytics: newAnalytics(cfg),
 	}
 }
 
@@ -607,6 +613,7 @@ func (p *Provisioner) handleCreate(w http.ResponseWriter, r *http.Request) {
 	phase, _ := p.backend.GetPodPhase(ctx, p.config.Namespace, podName)
 	log.Printf("provisioner: sandbox=%s READY phase=%s port=%d url=%s elapsed=%s",
 		finalID, phase, nodePort, publicURL, time.Since(createStart).Round(time.Millisecond))
+	p.analytics.track("sandbox.created", finalID)
 	writeJSON(w, 200, SandboxInfo{
 		SandboxID:  finalID,
 		SandboxURL: publicURL,
@@ -873,6 +880,7 @@ func (p *Provisioner) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("provisioner: sandbox=%s deleted", id)
+	p.analytics.track("sandbox.deleted", id)
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "sandbox_id": id})
 }
 
