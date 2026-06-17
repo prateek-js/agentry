@@ -93,7 +93,7 @@ func authEnable(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned — run `agentry cluster use NAME` first")
+		return die("no server pinned — run `agentry server use NAME` first")
 	}
 	profile := resolveProfile(cfg, "")
 
@@ -280,7 +280,7 @@ func authDisable(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, "")
 	state, _ := loadAuthState(cfg.Cluster, profile)
@@ -313,7 +313,7 @@ func authStatus(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, "")
 	state, err := loadAuthState(cfg.Cluster, profile)
@@ -417,7 +417,7 @@ func authProviderAdd(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, "")
 	state, _ := loadAuthState(cfg.Cluster, profile)
@@ -461,7 +461,7 @@ func authProviderRemove(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, "")
 	state, _ := loadAuthState(cfg.Cluster, profile)
@@ -492,7 +492,7 @@ func authProviderList(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, "")
 	state, _ := loadAuthState(cfg.Cluster, profile)

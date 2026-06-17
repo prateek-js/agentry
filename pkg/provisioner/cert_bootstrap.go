@@ -116,21 +116,56 @@ func BootstrapClusterCert(ctx context.Context, cfg Config) (*ClusterCertBundle, 
 	}
 
 	// Slow path: enroll.
+	if err := enrollAndPersist(ctx, cfg, bundle); err != nil {
+		return nil, err
+	}
+	return bundle, nil
+}
+
+// ReenrollClusterCert forces a fresh enrollment regardless of any cert
+// already on disk, overwriting the bundle in place. Used by the broker
+// client's self-heal: when the bridge rejects our cert (e.g. the CA was
+// rotated out from under a persisted cert, or the cert was revoked), the
+// unexpired-cert fast-path in BootstrapClusterCert would otherwise reuse
+// the dead cert forever. Re-enrolling with the env token gets a cert
+// signed by the *current* CA.
+func ReenrollClusterCert(ctx context.Context, cfg Config) (*ClusterCertBundle, error) {
+	if cfg.CertDir == "" {
+		return nil, fmt.Errorf("CertDir is required (set AGENTRY_CERT_DIR)")
+	}
+	bundle := &ClusterCertBundle{
+		CertPath:      filepath.Join(cfg.CertDir, "cluster.crt"),
+		KeyPath:       filepath.Join(cfg.CertDir, "cluster.key"),
+		CAPath:        filepath.Join(cfg.CertDir, "ca.crt"),
+		BridgeURLPath: filepath.Join(cfg.CertDir, "bridge_url.txt"),
+	}
+	if err := enrollAndPersist(ctx, cfg, bundle); err != nil {
+		return nil, err
+	}
+	return bundle, nil
+}
+
+// enrollAndPersist runs the actual enrollment: validate config, generate
+// a keypair + CSR, POST to the control plane, and atomically persist the
+// returned cert/key/CA/bridge-url into the bundle's paths. Shared by the
+// first-enroll (BootstrapClusterCert) and self-heal (ReenrollClusterCert)
+// paths.
+func enrollAndPersist(ctx context.Context, cfg Config, bundle *ClusterCertBundle) error {
 	if cfg.EnrollURL == "" {
-		return nil, fmt.Errorf("EnrollURL is required (set AGENTRY_ENROLL_URL)")
+		return fmt.Errorf("EnrollURL is required (set AGENTRY_ENROLL_URL)")
 	}
 	if cfg.EnrollToken == "" {
-		return nil, fmt.Errorf("EnrollToken is required (set AGENTRY_ENROLL_TOKEN)")
+		return fmt.Errorf("EnrollToken is required (set AGENTRY_ENROLL_TOKEN)")
 	}
 
 	if err := os.MkdirAll(cfg.CertDir, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", cfg.CertDir, err)
+		return fmt.Errorf("mkdir %s: %w", cfg.CertDir, err)
 	}
 
 	log.Printf("provisioner: enrolling cluster=%q against %s", cfg.ClusterID, cfg.EnrollURL)
 	keyPem, csrPem, err := genClusterKeypairAndCSR(cfg.ClusterID)
 	if err != nil {
-		return nil, fmt.Errorf("generate keypair: %w", err)
+		return fmt.Errorf("generate keypair: %w", err)
 	}
 
 	resp, err := postEnroll(ctx, cfg.EnrollURL, EnrollRequest{
@@ -138,31 +173,31 @@ func BootstrapClusterCert(ctx context.Context, cfg Config) (*ClusterCertBundle, 
 		CSRPem: csrPem,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("enroll POST: %w", err)
+		return fmt.Errorf("enroll POST: %w", err)
 	}
 	if resp.DeviceCertPem == "" || resp.CACertPem == "" {
-		return nil, fmt.Errorf("enroll response missing cert or ca: %+v", resp)
+		return fmt.Errorf("enroll response missing cert or ca: %+v", resp)
 	}
 
 	if err := writeSecretFile(bundle.CertPath, []byte(resp.DeviceCertPem)); err != nil {
-		return nil, fmt.Errorf("write cert: %w", err)
+		return fmt.Errorf("write cert: %w", err)
 	}
 	if err := writeSecretFile(bundle.KeyPath, keyPem); err != nil {
-		return nil, fmt.Errorf("write key: %w", err)
+		return fmt.Errorf("write key: %w", err)
 	}
 	if err := writeSecretFile(bundle.CAPath, []byte(resp.CACertPem)); err != nil {
-		return nil, fmt.Errorf("write CA: %w", err)
+		return fmt.Errorf("write CA: %w", err)
 	}
 	if resp.BridgeURL != "" {
 		if err := writeSecretFile(bundle.BridgeURLPath, []byte(resp.BridgeURL+"\n")); err != nil {
-			return nil, fmt.Errorf("write bridge_url: %w", err)
+			return fmt.Errorf("write bridge_url: %w", err)
 		}
 		bundle.BridgeURL = resp.BridgeURL
 	}
 
 	log.Printf("provisioner: enrolled, cert valid until %s, written to %s",
 		resp.ExpiresAt, cfg.CertDir)
-	return bundle, nil
+	return nil
 }
 
 // loadCertIfValid returns (cert, nil) when the file parses and is not

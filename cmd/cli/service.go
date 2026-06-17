@@ -203,7 +203,7 @@ func serviceBindCLI(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster use <name>` first")
+		return die("no server set; run `agentry server use <name>` first")
 	}
 	prof := resolveProfile(cfg, *profile)
 	if err := saveBind(cfg.Cluster, prof, &StoredBind{
@@ -235,7 +235,7 @@ Usage:
   agentry service binds
 
 Shows what cluster-default service bindings are staged on THIS laptop
-for the cluster you've selected with `+"`agentry cluster use`"+`. These
+for the server you've selected with `+"`agentry server use`"+`. These
 get applied automatically to every new sandbox in the cluster.
 
 Values themselves stay in ~/.agentry/services/<cluster>/<svc>.json
@@ -248,7 +248,7 @@ Values themselves stay in ~/.agentry/services/<cluster>/<svc>.json
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster use <name>` first")
+		return die("no server set; run `agentry server use <name>` first")
 	}
 	prof := resolveProfile(cfg, "")
 	binds, err := listBinds(cfg.Cluster, prof)
@@ -295,7 +295,7 @@ func serviceUnbindCLI(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster set; run `agentry cluster use <name>` first")
+		return die("no server set; run `agentry server use <name>` first")
 	}
 	prof := resolveProfile(cfg, "")
 	if err := deleteBind(cfg.Cluster, prof, args[0]); err != nil {
@@ -325,7 +325,7 @@ Output columns:
   DESCRIPTION  one-line summary
 
 Talk to the cluster's catalog over the tunnel — requires that you've
-run `+"`agentry cluster use <name>`"+` first.
+run `+"`agentry server use <name>`"+` first.
 `)
 		return 0
 	}

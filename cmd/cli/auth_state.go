@@ -85,7 +85,7 @@ func loadAuthState(cluster, profile string) (*AuthState, error) {
 // current user.
 func saveAuthState(cluster, profile string, s *AuthState) error {
 	if cluster == "" {
-		return fmt.Errorf("cluster is empty")
+		return fmt.Errorf("no server selected")
 	}
 	if s == nil {
 		return fmt.Errorf("auth state is nil")

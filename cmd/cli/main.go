@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -62,7 +63,7 @@ DAILY USE
   agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
 
-MULTI-ENV (profiles — one cluster, many configurations)
+MULTI-ENV (profiles — one server, many configurations)
   agentry profile                          print the active profile
   agentry profile list                     table of every profile on this laptop
   agentry profile use <name>               switch the active profile
@@ -202,7 +203,24 @@ func cmdHelp(args []string) int {
 // server bound to stdin/stdout with a tunneled HTTP client. The CLI
 // alias `agentry stdio` routes here so legacy editor configs (which
 // spawn "agentry stdio") keep working.
-func cmdMCP(_ []string) int {
+func cmdMCP(args []string) int {
+	// --server pins this MCP session to one server, independent of the
+	// global `agentry server use`. That lets you point one editor at
+	// `laptop` and another at `production` at the same time. Without it
+	// the session follows the current server and picks up live switches.
+	// --cluster is a deprecated alias kept so older configs keep working.
+	fs := flag.NewFlagSet("agentry mcp", flag.ContinueOnError)
+	var serverFlag, clusterFlag string
+	fs.StringVar(&serverFlag, "server", "", "pin this MCP session to a specific server (default: the current `agentry server use`)")
+	fs.StringVar(&clusterFlag, "cluster", "", "deprecated alias for --server")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	pin := serverFlag
+	if pin == "" {
+		pin = clusterFlag
+	}
+
 	cfg, path, err := LoadConfig()
 	if err != nil {
 		return die("load config: %v (run `agentry init` first; tried %s)", err, path)
@@ -210,8 +228,14 @@ func cmdMCP(_ []string) int {
 	if cfg.BrokerURL == "" {
 		return die("config %s has no broker_url; run `agentry init` first", path)
 	}
-	if cfg.Cluster == "" {
-		return die("no current cluster; run `agentry cluster use <name>` first")
+	// Resolve the server this session drives: an explicit --server pins
+	// it; otherwise follow the current `agentry server use`.
+	server := cfg.Cluster
+	if pin != "" {
+		server = pin
+	}
+	if server == "" {
+		return die("no current server; run `agentry server use <name>` first (or pass `agentry mcp --server <name>`)")
 	}
 
 	ctx, cancel := signalContext()
@@ -238,13 +262,17 @@ func cmdMCP(_ []string) int {
 	// (the RoundTripper's nil-session path); subsequent calls work
 	// once the dial lands.
 	//
-	// clusterRef is a TTL-cached reader for the active cluster so
-	// `agentry cluster use <name>` takes effect on the very next tool
+	// clusterRef is a TTL-cached reader for the active server so
+	// `agentry server use <name>` takes effect on the very next tool
 	// call from Roo, without forcing the user to kill + restart this
 	// stdio process. Reused by the post-create hook below so a new
-	// sandbox's cluster-default service binds also come from the
-	// current cluster, not the boot-time snapshot.
-	clusterRef := newConfigCluster(cfg.Cluster)
+	// sandbox's server-default service binds also come from the
+	// current server, not the boot-time snapshot. When --server pins
+	// the session, the ref is frozen and ignores live switches.
+	clusterRef := newConfigCluster(server)
+	if pin != "" {
+		clusterRef = newPinnedConfigCluster(server)
+	}
 	inner := tunnel.NewRoundTripper(nil)
 	rt := &clusterStampedRT{
 		next:       inner,
@@ -257,7 +285,7 @@ func cmdMCP(_ []string) int {
 	// timeouts, network blips, autocert renewals on the bridge,
 	// anything that closes the underlying TCP — the loop keeps the
 	// MCP server alive across all of those.
-	go connectAndKeepAlive(ctx, inner, dial, cfg.BrokerURL, cfg.DeviceID, cfg.Cluster)
+	go connectAndKeepAlive(ctx, inner, dial, cfg.BrokerURL, cfg.DeviceID, server)
 	defer func() {
 		// Order matters: cancel ctx first so the connect goroutine
 		// returns through its `<-ctx.Done()` branch and doesn't log
@@ -419,7 +447,7 @@ func die(format string, args ...any) int {
 // Either `cluster` (static, used by one-shot CLI subcommands that
 // exit before the user could plausibly switch clusters) or `getCluster`
 // (dynamic, used by the long-running `agentry mcp` stdio process so
-// `agentry cluster use <name>` takes effect on the next tool call
+// `agentry server use <name>` takes effect on the next tool call
 // without restarting the child) must be set. getCluster wins when
 // both are present.
 type clusterStampedRT struct {
@@ -442,7 +470,7 @@ func (r *clusterStampedRT) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // configCluster reads the active cluster from ~/.agentry/agentry.json
 // with a 1-second TTL cache. Lets `agentry mcp` pick up an out-of-band
-// `agentry cluster use <name>` without forcing the user to kill + let
+// `agentry server use <name>` without forcing the user to kill + let
 // Roo respawn the child. The per-call cost is at most one file read
 // per second; tool calls take 100-1000 ms of network anyway, so the
 // 10-50 µs cost is invisible.
@@ -456,6 +484,7 @@ type configCluster struct {
 	lastRead time.Time
 	ttl      time.Duration
 	prev     string // last logged value
+	pinned   bool   // --server pin: never re-read config, never switch
 }
 
 // newConfigCluster returns a cache pre-warmed with the initial value.
@@ -469,6 +498,14 @@ func newConfigCluster(initial string) *configCluster {
 	}
 }
 
+// newPinnedConfigCluster freezes the session to one server (set via
+// `agentry mcp --server <name>`). Get always returns that name and
+// never reads the config file, so a later `agentry server use` on the
+// laptop doesn't redirect this session's tool calls.
+func newPinnedConfigCluster(name string) *configCluster {
+	return &configCluster{value: name, prev: name, ttl: time.Second, pinned: true}
+}
+
 // Get returns the active cluster name. Cheap when called within the
 // TTL window; one config-file read otherwise. Falls back to the last
 // known good value if the file became unreadable (e.g. user deleted
@@ -476,6 +513,9 @@ func newConfigCluster(initial string) *configCluster {
 func (c *configCluster) Get() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.pinned {
+		return c.value
+	}
 	if time.Since(c.lastRead) < c.ttl {
 		return c.value
 	}

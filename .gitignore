@@ -23,3 +23,8 @@
 # Stray screenshots from in-session iteration; commit deliberately
 # under docs/ or similar instead of leaving them at the root.
 img.png
+
+# IDE + stray build/pull artifacts
+.idea/
+/authproxy
+data-reliability-scorecard/

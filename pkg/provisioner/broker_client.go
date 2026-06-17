@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -41,7 +42,18 @@ type BrokerClient struct {
 	// connected is observable from outside (tests, /healthz) without
 	// holding any lock. atomic.Bool gives us race-free state.
 	connected atomic.Bool
+
+	// reenroll, when set, is invoked after the broker repeatedly rejects
+	// our client cert (CA rotated under a persisted cert, cert revoked).
+	// It re-enrolls and mutates the shared tls.Config in place so the
+	// next dial presents a fresh cert. Returns an error (e.g. the enroll
+	// token is already consumed) which we log and keep retrying. nil =
+	// no self-heal (dev / plain-HTTP path).
+	reenroll func(context.Context) error
 }
+
+// SetReenroll installs the cert self-heal callback. See BrokerClient.reenroll.
+func (bc *BrokerClient) SetReenroll(fn func(context.Context) error) { bc.reenroll = fn }
 
 // NewBrokerClient returns an idle client. Call Run to start the loop.
 // tlsConfig may be nil — when so, the dial is plain HTTP (dev only).
@@ -66,6 +78,7 @@ func (bc *BrokerClient) Connected() bool {
 // ends (either normal shutdown or cancellation).
 func (bc *BrokerClient) Run(ctx context.Context) error {
 	backoff := tunnel.NewBackoff(tunnel.DialerBackoff())
+	certRejects := 0 // consecutive cert-rejection dial failures
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -81,6 +94,30 @@ func (bc *BrokerClient) Run(ctx context.Context) error {
 			TLSConfig: bc.tlsConfig,
 		})
 		if err != nil {
+			// Self-heal: the broker rejecting our client cert means the
+			// persisted cert is no longer trusted (CA rotated, cert
+			// revoked). The unexpired-cert fast-path would reuse it
+			// forever, so after a couple of confirming failures we
+			// re-enroll. reenroll mutates bc.tlsConfig in place; the next
+			// dial presents the fresh cert.
+			if isCertRejection(err) && bc.reenroll != nil {
+				certRejects++
+				if certRejects >= 2 {
+					log.Printf("provisioner: broker rejected our cert (%v); re-enrolling", err)
+					if rerr := bc.reenroll(ctx); rerr != nil {
+						log.Printf("provisioner: re-enroll failed: %v "+
+							"(if the enroll token is consumed, re-run with a fresh "+
+							"\"Add this machine\" command)", rerr)
+					} else {
+						log.Printf("provisioner: re-enrolled; retrying broker dial with the new cert")
+						certRejects = 0
+						backoff.Reset()
+						continue
+					}
+				}
+			} else {
+				certRejects = 0
+			}
 			delay := backoff.Next()
 			log.Printf("provisioner: broker dial failed (attempt %d): %v; retry in %s",
 				backoff.Attempts(), err, delay)
@@ -95,6 +132,7 @@ func (bc *BrokerClient) Run(ctx context.Context) error {
 			}
 		}
 
+		certRejects = 0
 		backoff.Reset()
 		bc.connected.Store(true)
 		log.Printf("provisioner: broker tunnel established (cluster=%s url=%s)",
@@ -124,6 +162,31 @@ func (bc *BrokerClient) Run(ctx context.Context) error {
 		// Loop reconnects. Backoff was reset on the previous success,
 		// so the first retry kicks off at Base again.
 	}
+}
+
+// isCertRejection reports whether a dial error is the broker refusing
+// our client certificate — the signal that our persisted cert is stale
+// (CA rotated) or revoked, and we should re-enroll. Matches the TLS
+// alert the client sees when the server fails to verify the client cert
+// chain, plus local x509 verification failures.
+func isCertRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, m := range []string{
+		"bad certificate",            // remote error: tls: bad certificate
+		"unknown authority",          // x509: certificate signed by unknown authority
+		"certificate signed by",      // x509 variants
+		"failed to verify certificate",
+		"certificate required",       // remote error: tls: certificate required
+		"expired or is not yet valid",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // isExpectedServeExit returns true for the "session closed cleanly"
