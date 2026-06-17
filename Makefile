@@ -23,7 +23,7 @@ GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
 VERSION ?= v0.5.3
-RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64
+RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
 
 # Multi-arch builder for GHCR images. Created once with
 # `docker buildx create --name agentry-multi --driver docker-container`.
@@ -141,9 +141,10 @@ release:
 	@mkdir -p /tmp/agentry-release/$(VERSION)
 	@for combo in $(RELEASE_ARCHES); do \
 		os=$${combo%-*}; arch=$${combo#*-}; \
+		ext=""; [ "$$os" = windows ] && ext=".exe"; \
 		echo "  - $$os/$$arch"; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w" \
-			-o /tmp/agentry-release/$(VERSION)/agentry-$$os-$$arch ./cmd/cli; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" \
+			-o /tmp/agentry-release/$(VERSION)/agentry-$$os-$$arch$$ext ./cmd/cli; \
 	done
 	@cd /tmp/agentry-release/$(VERSION) && shasum -a 256 agentry-* > SHA256SUMS
 	@echo "→ uploading to $(LANDING_HOST):/var/www/agentry/install/$(VERSION)/"

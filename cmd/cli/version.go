@@ -5,17 +5,23 @@ import (
 	"runtime/debug"
 )
 
-// cmdVersion prints what the user installed: semver if available,
-// otherwise the VCS commit + dirty state baked in by `go build`. The
-// stdlib debug.ReadBuildInfo populates this when the binary is built
-// from a tagged release; for local dev builds we fall back to the
-// VCS revision settings the toolchain stamps automatically.
+// version is stamped at release time via
+// -ldflags "-X main.version=v0.x.y" (see the Makefile `release` target).
+// Empty for local dev builds, which fall back to VCS build info.
+var version string
+
+// cmdVersion prints what the user installed: the release semver when
+// stamped, otherwise the VCS commit + dirty state baked in by `go build`.
+// The stdlib debug.ReadBuildInfo populates the latter automatically.
 func cmdVersion(_ []string) int {
 	fmt.Println(versionString())
 	return 0
 }
 
 func versionString() string {
+	if version != "" {
+		return "agentry " + version
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "agentry (version unknown)"
