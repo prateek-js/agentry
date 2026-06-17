@@ -315,6 +315,26 @@ func (p *Provisioner) Run() error {
 		// to direct — unreachable from the device.
 		p.config.BridgeURL = bridgeURL
 		bc := NewBrokerClient(bridgeURL, p.config.ClusterID, p.Handler(), tlsConf)
+		// Cert self-heal: if the bridge rejects our cert (CA rotated under
+		// a persisted cert, or revoked), re-enroll and hot-swap the cert
+		// into the shared tls.Config in place — same mutation pattern the
+		// renewer uses, so the next dial presents the fresh cert.
+		if tlsConf != nil {
+			cfg := p.config
+			bc.SetReenroll(func(ctx context.Context) error {
+				b, err := ReenrollClusterCert(ctx, cfg)
+				if err != nil {
+					return err
+				}
+				nc, err := BuildClusterTLSConfig(b)
+				if err != nil {
+					return err
+				}
+				tlsConf.Certificates = nc.Certificates
+				tlsConf.RootCAs = nc.RootCAs
+				return nil
+			})
+		}
 		go func() {
 			if err := bc.Run(bgCtx); err != nil && err != context.Canceled {
 				log.Printf("bridge tunnel exited: %v", err)
