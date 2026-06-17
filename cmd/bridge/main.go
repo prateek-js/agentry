@@ -38,6 +38,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentryhttp "github.com/getsentry/sentry-go/http"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/agentry/agentry/pkg/bridge"
@@ -48,6 +50,23 @@ func main() {
 	flag.Parse()
 
 	env := loadEnv()
+
+	// Sentry — opt-in via SENTRY_DSN. Silent when unset (local / dev).
+	// When set, panics in request handling + explicit captures flow out,
+	// each tagged with the bridge environment + release. Flushed on the
+	// graceful-shutdown path below (Fatalf paths skip it by design).
+	if sentryDSN := os.Getenv("SENTRY_DSN"); sentryDSN != "" {
+		if err := sentry.Init(sentry.ClientOptions{
+			Dsn:              sentryDSN,
+			Environment:      envOr("SENTRY_ENV", "production"),
+			Release:          envOr("SENTRY_RELEASE", "agentry-bridge@dev"),
+			TracesSampleRate: 0.1,
+		}); err != nil {
+			log.Printf("bridge: sentry init: %v (continuing without)", err)
+		} else {
+			defer sentry.Flush(2 * time.Second)
+		}
+	}
 
 	// DEV_MODE turns off mTLS, role-CN binding, org-SAN tenancy, the
 	// cross-org routing check, and the admin gate on the route table —
@@ -94,7 +113,7 @@ func main() {
 func runPlain(b *bridge.Broker, addr string, stop <-chan os.Signal) {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           b.Handler(),
+		Handler:           sentryWrap(b.Handler()),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() {
@@ -225,7 +244,7 @@ func runTLS(b *bridge.Broker, env envConfig, caCert *x509.Certificate, stop <-ch
 
 	httpsSrv := &http.Server{
 		Addr:              env.httpsListen,
-		Handler:           dispatcher,
+		Handler:           sentryWrap(dispatcher),
 		TLSConfig:         tlsConf,
 		ReadHeaderTimeout: 30 * time.Second,
 		// No ReadTimeout/WriteTimeout — once handleTunnel hijacks, the
@@ -453,4 +472,19 @@ func envBool(key string) bool {
 		return true
 	}
 	return false
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// sentryWrap adds the Sentry HTTP middleware (panic capture + per-request
+// context) around a handler. A no-op when SENTRY_DSN was unset, since
+// sentry.Init was never called. Repanic:true re-raises after capture so
+// the http.Server's own per-connection recovery still closes the conn.
+func sentryWrap(h http.Handler) http.Handler {
+	return sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(h)
 }
