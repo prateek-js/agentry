@@ -1,12 +1,15 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -192,8 +195,19 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	originalQuery := r.URL.RawQuery
+	// "Built with agentry" badge: injected only on PUBLIC dev-preview
+	// shares (the ephemeral *.agentry.live links people pass around).
+	// Never on deployments, never on org/password shares, never on
+	// custom domains (those reach HandleDeployment only via a registered
+	// route, but the public-share gate below still excludes them).
+	injectBadge := route.Kind != "deployment" && strings.EqualFold(route.AuthMode, "public")
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			// For pages we rewrite, ask upstream for uncompressed HTML so
+			// ModifyResponse can splice the badge without gzip round-trips.
+			if injectBadge {
+				req.Header.Set("Accept-Encoding", "identity")
+			}
 			// Preserve the public hostname for downstream consumers.
 			// The runtime's app_proxy clobbers Host to 127.0.0.1:PORT
 			// when it forwards into the sandbox, so any handler past
@@ -228,6 +242,12 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Authorization")
 		},
 		Transport: cluster.rt,
+		ModifyResponse: func(resp *http.Response) error {
+			if injectBadge {
+				injectBuiltWithBadge(resp)
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			if errors.Is(err, tunnel.ErrSessionClosed) {
 				http.Error(w, "cluster session closed mid-request", http.StatusBadGateway)
@@ -237,6 +257,63 @@ func (b *Broker) HandleDeployment(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// builtWithBadge is the floating "Built with agentry" pill spliced into
+// public preview pages. Self-contained inline styles + a max z-index so
+// it survives whatever CSS the app ships; opens agentry.run in a new tab.
+const builtWithBadge = `<div style="position:fixed;bottom:12px;right:12px;z-index:2147483647;font-family:system-ui,-apple-system,sans-serif">` +
+	`<a href="https://agentry.run?utm_source=preview_badge" target="_blank" rel="noopener noreferrer" ` +
+	`style="display:inline-flex;align-items:center;gap:6px;background:#18181b;color:#fff;text-decoration:none;` +
+	`font-size:12px;font-weight:500;line-height:1;padding:6px 12px;border-radius:9999px;box-shadow:0 4px 14px rgba(0,0,0,.18)">` +
+	`<span style="width:7px;height:7px;border-radius:9999px;background:#10b981"></span>Built with agentry</a></div>`
+
+// injectBuiltWithBadge splices the badge into an HTML response, just
+// before </body>. No-op unless the response is a 2xx text/html page that
+// fits a sane size cap. Conservative by design: anything unusual (non-HTML,
+// already-compressed, oversized, read error) is left exactly as-is so we
+// never corrupt a user's app.
+func injectBuiltWithBadge(resp *http.Response) {
+	if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+		return
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		return // still compressed despite our identity hint — don't touch
+	}
+	const maxInject = 8 << 20 // 8 MiB cap; bigger pages stream through untouched
+	if resp.ContentLength > maxInject {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInject+1))
+	_ = resp.Body.Close()
+	if err != nil || int64(len(body)) > maxInject {
+		// Read failed or over cap — restore what we have, unmodified.
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if err == nil {
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		}
+		return
+	}
+	// Insert before the last </body> (case-insensitive); append if absent.
+	out := body
+	if i := lastIndexFold(body, []byte("</body>")); i >= 0 {
+		out = append(append(append([]byte{}, body[:i]...), []byte(builtWithBadge)...), body[i:]...)
+	} else {
+		out = append(append([]byte{}, body...), []byte(builtWithBadge)...)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(out))
+	resp.ContentLength = int64(len(out))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+}
+
+// lastIndexFold is bytes.LastIndex with ASCII case-insensitivity for the
+// needle — enough for matching </body> / </BODY> / </Body>.
+func lastIndexFold(haystack, needle []byte) int {
+	return bytes.LastIndex(bytes.ToLower(haystack), bytes.ToLower(needle))
 }
 
 // filterClerkCookies removes Clerk-issued dashboard cookies from a
