@@ -35,8 +35,7 @@ help:
 	@echo "agentry deploy targets:"
 	@echo "  make cli                    build + install local CLI (/opt/homebrew/bin + ~/.local/bin)"
 	@echo "  make bridge-deploy          build linux binary, ship to bridge box, restart"
-	@echo "  make provisioner-deploy     rsync source, docker build provisioner, push, restart"
-	@echo "  make runtime-deploy         rsync source, docker build runtime, verify entrypoint, push"
+	@echo "  make images                 build + push BOTH images multi-arch (amd64+arm64) — use this to publish"
 	@echo "  make smoke                  drive MCP smoke test (sandbox create→list→delete) end-to-end"
 	@echo "  make smoke-login            drive agentry login + cluster-ls tenancy check end-to-end"
 	@echo ""
@@ -63,53 +62,21 @@ sync-src:
 	@echo "→ rsync source to $(PROV_HOST):/root/agentry-src/"
 	rsync -az --delete --exclude='.git' --exclude='node_modules' --exclude='bin/' --exclude='dist/' --exclude='*.bak.*' -e "ssh -i $(SSH_KEY)" ./ $(PROV_HOST):/root/agentry-src/
 
-.PHONY: provisioner-deploy
-provisioner-deploy: sync-src
-	@echo "→ building provisioner image on $(PROV_HOST) (version=$(PROV_VERSION))"
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'cd /root/agentry-src && docker build -f docker/Dockerfile.provisioner --build-arg PROVISIONER_VERSION=$(PROV_VERSION) -t $(PROVISIONER_IMG) .'
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'docker push $(PROVISIONER_IMG)'
-	@echo "→ publishing latest version marker + update.sh for the dashboard update check"
-	ssh -i $(SSH_KEY) $(LANDING_HOST) 'printf "%s" "$(PROV_VERSION)" > /var/www/agentry/provisioner-latest.txt && chmod a+r /var/www/agentry/provisioner-latest.txt'
-	scp -i $(SSH_KEY) -q scripts/update.sh $(LANDING_HOST):/var/www/agentry/update.sh
-	ssh -i $(SSH_KEY) $(LANDING_HOST) 'chmod a+r /var/www/agentry/update.sh'
-	@# docker restart REUSES the existing container's image digest —
-	@# so it'd silently keep running the OLD binary. We have to stop,
-	@# remove, then `docker run` from the freshly-tagged image. Mounts
-	@# (docker.sock + agentry-data volume) and env are preserved by
-	@# reading them from the live container before teardown.
-	@echo "→ recreating container with fresh image"
-	@# Preserve the running container's env AND network mode. The
-	@# default bridge network breaks the provisioner: when it dials
-	@# the sandbox runtime at NodeHost:port (NodeHost=localhost,
-	@# port=docker-published 3xxxx), it needs to be on the host
-	@# network to reach those ports — sandboxes are siblings on the
-	@# Docker daemon, not children. Without this the runtime proxy
-	@# fails connection-refused on every request, the sandbox detail
-	@# page goes dark, and the bindings list comes back empty.
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'set -e; \
-		ENV_ARGS=$$(docker inspect agentry-provisioner --format "{{range .Config.Env}}-e {{.}} {{end}}"); \
-		NET_MODE=$$(docker inspect agentry-provisioner --format "{{.HostConfig.NetworkMode}}"); \
-		docker stop agentry-provisioner >/dev/null; \
-		docker rm agentry-provisioner >/dev/null; \
-		docker run -d --name agentry-provisioner --restart=unless-stopped \
-			--network "$$NET_MODE" \
-			-v /var/run/docker.sock:/var/run/docker.sock \
-			-v agentry-data:/var/lib/agentry-provisioner \
-			$$ENV_ARGS \
-			$(PROVISIONER_IMG); \
-		sleep 2; \
-		docker ps --filter name=agentry-provisioner --format "{{.Status}} {{.Image}} network={{.Networks}}"'
-	@echo "✓ provisioner image pushed + container recreated"
-
-.PHONY: runtime-deploy
-runtime-deploy: sync-src
-	@echo "→ building runtime image on $(PROV_HOST)"
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'cd /root/agentry-src && docker build -f docker/Dockerfile.runtime -t $(RUNTIME_IMG) .'
-	@echo "→ verifying entrypoint"
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'docker inspect $(RUNTIME_IMG) --format "Entrypoint: {{json .Config.Entrypoint}}  Cmd: {{json .Config.Cmd}}"'
-	@echo "→ pushing to GHCR"
-	ssh -i $(SSH_KEY) $(PROV_HOST) 'docker push $(RUNTIME_IMG)'
-	@echo "✓ runtime image pushed — new sandboxes pick it up"
+# RETIRED: provisioner-deploy / runtime-deploy did a single-arch
+# `docker build` on an amd64 host and pushed it to :latest. That
+# OVERWRITES the multi-arch manifest with an amd64-only image, which
+# breaks every arm64 (Apple Silicon) onboard with "no matching manifest
+# for linux/arm64". Always publish both images multi-arch via `make
+# images` (buildx, amd64+arm64). Servers update via the dashboard's
+# "Update server" button or by re-running the `--pull=always` onboard
+# command — no per-host rebuild needed.
+.PHONY: provisioner-deploy runtime-deploy
+provisioner-deploy runtime-deploy:
+	@echo "✗ '$@' is retired: it published a single-arch (amd64-only) image and" >&2
+	@echo "  clobbered the multi-arch :latest manifest, breaking arm64 onboards." >&2
+	@echo "  Publish both images multi-arch instead:" >&2
+	@echo "      make images" >&2
+	@exit 2
 
 .PHONY: smoke
 smoke:
@@ -160,8 +127,9 @@ release:
 images:
 	@docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
 		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --bootstrap
-	@echo "→ building provisioner ($(BUILDX_PLATFORMS))"
+	@echo "→ building provisioner ($(BUILDX_PLATFORMS), version=$(PROV_VERSION))"
 	docker buildx build --builder $(BUILDX_BUILDER) --platform $(BUILDX_PLATFORMS) \
+		--build-arg PROVISIONER_VERSION=$(PROV_VERSION) \
 		-f docker/Dockerfile.provisioner -t $(PROVISIONER_IMG) --push .
 	@echo "→ building runtime ($(BUILDX_PLATFORMS); amd64 under emulation, slow but acceptable for releases)"
 	docker buildx build --builder $(BUILDX_BUILDER) --platform $(BUILDX_PLATFORMS) \
