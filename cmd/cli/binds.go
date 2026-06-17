@@ -81,7 +81,7 @@ func loadBind(cluster, profile, service string) (*StoredBind, error) {
 // parent dir with 0700.
 func saveBind(cluster, profile string, b *StoredBind) error {
 	if cluster == "" {
-		return fmt.Errorf("cluster is empty; run `agentry cluster use <name>` first")
+		return fmt.Errorf("no server selected; run `agentry server use <name>` first")
 	}
 	if b == nil || b.Service == "" {
 		return fmt.Errorf("service is required")
@@ -123,7 +123,7 @@ func deleteBind(cluster, profile, service string) error {
 //
 // getCtx is called PER INVOCATION so the binds match whichever
 // cluster + profile the request was actually routed to — important
-// because the stdio process is long-running and `agentry cluster use`
+// because the stdio process is long-running and `agentry server use`
 // or `agentry profile use` can change the answer between
 // sandbox_creates. A nil getter or empty cluster skips the hook
 // entirely (degrades gracefully).

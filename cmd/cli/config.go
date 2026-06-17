@@ -19,7 +19,7 @@ import (
 //   - DeviceID: the laptop's chosen name (hostname-ish)
 //   - DeviceCertPath / DeviceKeyPath / CACertPath: cert bundle
 //
-// Set on `agentry cluster use`:
+// Set on `agentry server use`:
 //   - Cluster: which X-Cluster value subsequent commands stamp
 // Set on `agentry profile use`:
 //   - Profile: the named env/binds slice within the active cluster

@@ -160,7 +160,7 @@ const profileUsage = `Usage:
   agentry profile                       show the active profile
   agentry profile list                  list every profile on this laptop
   agentry profile use NAME              switch the active profile
-  agentry profile create NAME           create an empty profile on the current cluster
+  agentry profile create NAME           create an empty profile on the current server
   agentry profile delete NAME           remove a profile and its staged content
   agentry profile show [NAME]           describe a profile's envs and binds
   agentry profile copy SOURCE DEST      clone one profile into another
@@ -225,20 +225,20 @@ func profileCurrent(_ []string) int {
 	profile := resolveProfile(cfg, "")
 	if cfg.Cluster == "" {
 		fmt.Printf("%s\n", profile)
-		fmt.Fprintln(os.Stderr, "(no cluster pinned — run `agentry cluster use NAME`)")
+		fmt.Fprintln(os.Stderr, "(no server pinned — run `agentry server use NAME`)")
 		return 0
 	}
 	fmt.Printf("%s (cluster=%s)\n", profile, cfg.Cluster)
 	return 0
 }
 
-// profileUse switches the active profile on the current cluster.
+// profileUse switches the active profile on the current server.
 // Doesn't validate that the profile dir exists — switching to a fresh
 // name just means "next env/bind set will land in this profile."
 func profileUse(args []string) int {
 	if len(args) < 1 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "Usage: agentry profile use NAME")
-		fmt.Fprintln(os.Stderr, "  Switches the active profile within the current cluster.")
+		fmt.Fprintln(os.Stderr, "  Switches the active profile within the current server.")
 		if len(args) == 0 {
 			return 2
 		}
@@ -259,7 +259,7 @@ func profileUse(args []string) int {
 	}
 	cluster := cfg.Cluster
 	if cluster == "" {
-		cluster = "(no cluster pinned)"
+		cluster = "(no server pinned)"
 	}
 	if name == previous {
 		fmt.Printf("Already on profile %q (cluster=%s).\n", name, cluster)
@@ -278,7 +278,7 @@ func profileList(args []string) int {
 	if len(args) > 0 && isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stdout, "Usage: agentry profile list")
 		fmt.Fprintln(os.Stdout, "  Shows every profile on this laptop across every cluster.")
-		fmt.Fprintln(os.Stdout, "  '*' in the ACTIVE column marks the current cluster + profile.")
+		fmt.Fprintln(os.Stdout, "  '*' in the ACTIVE column marks the current server + profile.")
 		return 0
 	}
 	return listProfilesTo(os.Stdout)
@@ -390,7 +390,7 @@ func countJSONs(dir string) int {
 func profileCreate(args []string) int {
 	if len(args) < 1 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "Usage: agentry profile create NAME")
-		fmt.Fprintln(os.Stderr, "  Creates an empty profile on the current cluster.")
+		fmt.Fprintln(os.Stderr, "  Creates an empty profile on the current server.")
 		fmt.Fprintln(os.Stderr, "  Run `agentry profile use NAME` afterwards to make it active.")
 		if len(args) == 0 {
 			return 2
@@ -406,7 +406,7 @@ func profileCreate(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned — run `agentry cluster use NAME` first")
+		return die("no server pinned — run `agentry server use NAME` first")
 	}
 	base := filepath.Dir(ConfigPath())
 	for _, kind := range []string{"envs", "services"} {
@@ -449,7 +449,7 @@ func profileDelete(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	if resolveProfile(cfg, "") == name {
 		return die("can't delete the active profile — run `agentry profile use OTHER` first")
@@ -475,7 +475,7 @@ func profileShow(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agentry profile show [--profile NAME]")
 		fmt.Fprintln(os.Stderr, "  Describes the active profile (or the one named with --profile)")
-		fmt.Fprintln(os.Stderr, "  on the current cluster: env names + bind names. Values are")
+		fmt.Fprintln(os.Stderr, "  on the current server: env names + bind names. Values are")
 		fmt.Fprintln(os.Stderr, "  never printed.")
 	}
 	override := fs.String("profile", "", "profile to show (default: active profile)")
@@ -488,7 +488,7 @@ func profileShow(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	profile := resolveProfile(cfg, *override)
 	return showProfileTo(os.Stdout, cfg.Cluster, profile)
@@ -543,7 +543,7 @@ func listProfileJSON(dir string) []string {
 }
 
 // profileCopy clones one profile's contents into another. Source and
-// dest are on the current cluster; cross-cluster copy isn't supported
+// dest are on the current server; cross-cluster copy isn't supported
 // (different cluster usually means different DB URLs anyway, so a
 // blind copy would mostly be wrong). Refuses to overwrite existing
 // dest files — if dst already has the file, the operator probably set
@@ -574,7 +574,7 @@ func profileCopy(args []string) int {
 		return die("load config: %v", err)
 	}
 	if cfg.Cluster == "" {
-		return die("no cluster pinned")
+		return die("no server pinned")
 	}
 	base := filepath.Dir(ConfigPath())
 	copied, skipped := 0, 0
