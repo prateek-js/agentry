@@ -13,6 +13,12 @@ LANDING_HOST ?= root@188.34.177.4
 RUNTIME_IMG     := ghcr.io/agentry-ai/runtime:latest
 PROVISIONER_IMG := ghcr.io/agentry-ai/sandbox-provisioner:latest
 
+# Public install bucket + CloudFront dist (AWS acct 206579390825). The
+# `images` target writes the provisioner version marker here so the
+# dashboard's "latest" check reads the exact version it just published.
+SITE_BUCKET ?= agentry-site-206579390825
+SITE_DIST   ?= E1U8GS89XKS1PG
+
 # Provisioner build version — stamped into the binary AND published to
 # the landing host as provisioner-latest.txt, which the control plane
 # reads to tell the dashboard "update available". Computed locally
@@ -137,4 +143,10 @@ images:
 	@echo "→ verifying both manifests have amd64 + arm64"
 	@docker buildx imagetools inspect $(PROVISIONER_IMG) | grep -E "linux/(amd64|arm64)\b" | sort -u
 	@docker buildx imagetools inspect $(RUNTIME_IMG)     | grep -E "linux/(amd64|arm64)\b" | sort -u
-	@echo "✓ both images live on GHCR as multi-arch"
+	@echo "→ publishing version marker $(PROV_VERSION) (same value stamped into the image,"
+	@echo "  so the dashboard's 'latest' can't drift from what's running)"
+	printf '%s' "$(PROV_VERSION)" | aws s3 cp - s3://$(SITE_BUCKET)/install/provisioner-latest.txt \
+		--content-type text/plain --cache-control "public,max-age=60"
+	aws cloudfront create-invalidation --distribution-id $(SITE_DIST) \
+		--paths /install/provisioner-latest.txt >/dev/null
+	@echo "✓ both images live on GHCR as multi-arch; latest marker = $(PROV_VERSION)"
