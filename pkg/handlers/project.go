@@ -698,9 +698,16 @@ func ProjectListHandler(pm *ProjectManager) http.HandlerFunc {
 // Keeping the manifest + stub files together as a flat tuple makes the
 // switch below readable without sprouting per-kind helper funcs.
 type projectCreateScaffold struct {
-	config models.ProjectConfig
-	files  map[string]string // relpath under projectDir → content
+	config   models.ProjectConfig
+	files    map[string]string // relpath under projectDir → content
+	copyFrom string            // if set, recursively copy this dir's contents into the project (for tree templates like automation)
+	nextStep string            // overrides the default next_step hint when set
 }
+
+// automationTemplateDir is the baked @agentry/automation Next.js template
+// (scheduler + webhooks + the /_agentry control panel). project_create
+// kind=automation copies it into the project. Baked by docker/Dockerfile.runtime.
+const automationTemplateDir = "/opt/agentry/automation/template"
 
 // buildProjectScaffold returns the manifest and starter files for one
 // of the supported kinds. The starter files exist for two reasons:
@@ -812,6 +819,26 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 			},
 		}, nil
 
+	case "automation":
+		// Scheduled jobs + webhooks with a built-in control panel. Copies
+		// the baked @agentry/automation Next.js template; the agent edits
+		// automations/jobs.ts (schedules) + automations/hooks.ts (webhooks).
+		// Runs as a normal port-app via `npm run dev`; the control panel is
+		// at /_agentry. See skills/automation/SKILL.md.
+		if _, err := os.Stat(automationTemplateDir); err != nil {
+			return projectCreateScaffold{}, fmt.Errorf("automation template not found at %s — this sandbox is on an older runtime image; update the server (dashboard → Update server) so the automation framework is baked in", automationTemplateDir)
+		}
+		return projectCreateScaffold{
+			config: models.ProjectConfig{
+				Name:         name,
+				Type:         "app",
+				StartCommand: []string{"npm", "run", "dev"},
+				AutoRestart:  true,
+			},
+			copyFrom: automationTemplateDir,
+			nextStep: fmt.Sprintf("Automation scaffolded from the template. Next: (1) `npm install` in %s, (2) write your schedules in automations/jobs.ts (defineSchedule) and webhooks in automations/hooks.ts (withWebhook) — read skills/automation/SKILL.md first, (3) project_start with name=%q. The control panel (runs, payloads, Run-now, Replay) is at /_agentry. Run history persists to a bound DB (postgres/mysql/mongo/redis) — tell the user to `agentry service bind postgres` for durable history, else it's ephemeral.", filepath.Join("/workspace/projects", name), name),
+		}, nil
+
 	case "custom":
 		if len(customStart) == 0 {
 			return projectCreateScaffold{}, fmt.Errorf("custom kind requires start_command")
@@ -827,7 +854,7 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 		}, nil
 
 	default:
-		return projectCreateScaffold{}, fmt.Errorf("unknown kind %q — supported: nextjs, static-html, streamlit, fastapi, python-script, custom", kind)
+		return projectCreateScaffold{}, fmt.Errorf("unknown kind %q — supported: nextjs, static-html, streamlit, fastapi, python-script, automation, custom", kind)
 	}
 }
 
@@ -881,6 +908,54 @@ while True:
 `
 }
 
+// copyTreeInto recursively copies the contents of src into dst, returning
+// the destination paths written. It skips dependency/build artifacts
+// (node_modules, .next, .git) and never overwrites a file that already
+// exists at the destination — so a project_create after a partial
+// file_write, or over the manifest, is non-destructive.
+func copyTreeInto(src, dst string) ([]string, error) {
+	var written []string
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		switch info.Name() {
+		case "node_modules", ".next", ".git":
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if _, statErr := os.Stat(target); statErr == nil {
+			return nil // don't clobber
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+		written = append(written, target)
+		return nil
+	})
+	return written, err
+}
+
 // CreateProject materialises a project scaffold under workDir/projects/<name>.
 // Returns the manifest path + the list of files written so the handler
 // can echo them. Returns an error if the project dir already has a
@@ -893,7 +968,7 @@ func (pm *ProjectManager) CreateProject(req models.ProjectCreateRequest) (models
 		return models.ProjectCreateData{}, fmt.Errorf("name must be a single path segment")
 	}
 	if req.Kind == "" {
-		return models.ProjectCreateData{}, fmt.Errorf("kind is required (nextjs, static-html, streamlit, fastapi, python-script, custom)")
+		return models.ProjectCreateData{}, fmt.Errorf("kind is required (nextjs, static-html, streamlit, fastapi, python-script, automation, custom)")
 	}
 
 	scaffold, err := buildProjectScaffold(req.Name, req.Kind, req.StartCommand, req.Port)
@@ -921,6 +996,17 @@ func (pm *ProjectManager) CreateProject(req models.ProjectCreateRequest) (models
 	}
 
 	written := []string{configPath}
+
+	// Tree templates (e.g. automation) copy a baked directory in. Skip
+	// build/dep artifacts and never clobber the manifest or pre-written files.
+	if scaffold.copyFrom != "" {
+		copied, err := copyTreeInto(scaffold.copyFrom, projectDir)
+		if err != nil {
+			return models.ProjectCreateData{}, fmt.Errorf("scaffold copy from %s: %w", scaffold.copyFrom, err)
+		}
+		written = append(written, copied...)
+	}
+
 	for rel, content := range scaffold.files {
 		full := filepath.Join(projectDir, rel)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -938,7 +1024,10 @@ func (pm *ProjectManager) CreateProject(req models.ProjectCreateRequest) (models
 		written = append(written, full)
 	}
 
-	nextStep := fmt.Sprintf("Project created. Next: edit files under %s as needed (start with content, NOT styling — read skills/frontend-design/SKILL.md before any CSS), then call project_start with name=%q.", projectDir, req.Name)
+	nextStep := scaffold.nextStep
+	if nextStep == "" {
+		nextStep = fmt.Sprintf("Project created. Next: edit files under %s as needed (start with content, NOT styling — read skills/frontend-design/SKILL.md before any CSS), then call project_start with name=%q.", projectDir, req.Name)
+	}
 	return models.ProjectCreateData{
 		Name:         scaffold.config.Name,
 		Kind:         req.Kind,

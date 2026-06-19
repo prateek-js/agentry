@@ -23,19 +23,20 @@ in the app process. No external scheduler, no separate service.
 
 ## Scaffold
 
-The whole thing is baked at `/opt/agentry/automation/template`. Copy it
-into your project and install — it already wires the scheduler, the
-webhook router, and the control panel:
+`project_create kind=automation` does the scaffolding — it copies the
+baked `@agentry/automation` template (scheduler + webhook router + control
+panel) into your project. Then:
 
 ```bash
-cp -r /opt/agentry/automation/template <your-project-dir>
-cd <your-project-dir>
-npm install            # @agentry/automation resolves from the baked copy
+cd /workspace/projects/<name>
+npm install            # @agentry/automation + the DB drivers resolve here
 ```
 
-Then register it like any Next app: `project_create kind=nextjs`,
-`project_start`. Iterate with edits + `project_logs`; the control panel at
-`/_agentry` is your observability (it's the automation's "Open it").
+Then `project_start`. Iterate with edits + `project_logs`; the control
+panel at `/_agentry` is your observability (it's the automation's "Open it").
+
+(Do NOT use `kind: python-script` for a scheduled/webhook job — it has no
+schedule primitive and no UI. `kind: automation` is the one.)
 
 What's in the template, and the only files you normally touch:
 

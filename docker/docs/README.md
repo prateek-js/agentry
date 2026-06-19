@@ -37,7 +37,7 @@ These rules apply to every recipe below. They are not stack-specific.
 | "data dashboard", "explore this CSV", "make a quick chart UI", "interactive ML demo" | `kind: streamlit` | `streamlit.md` + `skills/frontend-design/SKILL.md` |
 | "API", "endpoint that returns X", "small backend for my client to call" | `kind: fastapi` | `fastapi.md` |
 | "worker", "batch job", "scraper" — a one-shot script | `kind: python-script` | `python-script.md` |
-| "automation", "run this on a schedule", "every morning / hourly / cron", "handle a Stripe/GitHub/Slack webhook", "do X when an event arrives" — recurring jobs or webhooks that need run history | `kind: nextjs` via the baked automation template | `skills/automation/SKILL.md` (scheduler + webhooks + a built-in control panel at `/_agentry`; bind a DB for durable history) |
+| "automation", "run this on a schedule", "every morning / hourly / cron / every N minutes", "handle a Stripe/GitHub/Slack webhook", "do X when an event arrives" — recurring jobs or webhooks that need run history | `kind: automation` (NOT python-script) | `skills/automation/SKILL.md` (scheduler + webhooks + a built-in control panel at `/_agentry`; bind a DB for durable history) |
 | Any of the above when the recipe doesn't fit — bespoke stack, custom runtime | `kind: custom` (provide `start_command`) | `projects.md` for manifest schema |
 | "make it look nicer", "redesign", "make it beautiful", any UI polish | (any kind) | `skills/frontend-design/SKILL.md` + a theme from `skills/theme-factory/themes/` or a named style in `skills/theme-factory/styles-catalog.md` |
 | "looks AI-generated", "looks generic", "looks like every other site" | (any kind) | `skills/frontend-design/references/ai-tells.md` then rebuild the offending parts |

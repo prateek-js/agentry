@@ -155,7 +155,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • static-html                            — vanilla HTML recipe\n" +
 			"  • streamlit                              — Streamlit recipe\n" +
 			"  • fastapi                                — FastAPI recipe\n" +
-			"  • python-script                          — long-running Python recipe\n" +
+			"  • python-script                          — long-running Python recipe (one-off worker; for schedules/webhooks use automation)\n" +
+			"  • skills/automation                      — scheduled jobs + webhooks + a built-in /_agentry control panel (use kind=automation; recurring/cron or Stripe/GitHub/Slack events)\n" +
 			"  • bridge                                 — URL/cookie/origin rules behind the preview proxy (all kinds)\n" +
 			"  • services                               — service binding table + data-namespacing patterns (all kinds)\n" +
 			"  • skills/frontend-design                 — design principles; READ before any CSS/HTML/JSX\n" +
@@ -206,7 +207,8 @@ func Register(server *mcp.Server, c *Client) {
 			"  • static-html   — vanilla HTML/CSS/JS served by `python3 -m http.server`. The right choice for landing pages, marketing, microsites, portfolios — anything where you'd otherwise tell the user to run a static server.\n" +
 			"  • streamlit     — Python data app; scaffolds app.py + requirements.txt + start_command\n" +
 			"  • fastapi       — Python API; scaffolds app.py + requirements.txt + uvicorn start_command\n" +
-			"  • python-script — long-running Python process (worker, batch job); scaffolds main.py\n" +
+			"  • automation    — scheduled jobs (cron) and/or webhooks WITH a built-in control panel at /_agentry (run history, payloads, Run-now, Replay). USE THIS — not python-script — for anything recurring/scheduled (\"every morning\", \"hourly\", \"every 5 min\", cron) or event-driven (Stripe/GitHub/Slack webhooks). Copies the @agentry/automation template; you then `npm install`, write automations/jobs.ts + automations/hooks.ts (read skills/automation/SKILL.md), project_start. Run history persists to a bound DB (postgres/mysql/mongo/redis) or is ephemeral.\n" +
+			"  • python-script — long-running Python process for a ONE-OFF worker (a scraper/batch job with no schedule and no UI). If it polls on a timer or handles webhooks, use `automation` instead — it gives schedules, retries-visibility, and a dashboard for free.\n" +
 			"  • custom        — bring your own start_command (REQUIRED argv array when kind=custom)\n" +
 			"Scaffold returns the manifest path + the starter files written + the start_command + a next_step hint. Stubs are minimal — overwrite them. " +
 			"NEVER tell the user to run a server themselves (no `python3 -m http.server` instructions, no `npm run dev`, no `streamlit run` — the project manager owns the lifecycle, ports, restarts, and logs).",
@@ -388,7 +390,7 @@ type portWaitArgs struct {
 type projectCreateArgs struct {
 	SandboxURL   string   `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
 	Name         string   `json:"name" jsonschema:"project directory name under /workspace/projects/. Use the deliverable's short name (e.g. 'landing', 'jira-dash'). One path segment, no slashes."`
-	Kind         string   `json:"kind" jsonschema:"template to scaffold: nextjs | static-html | streamlit | fastapi | python-script | custom"`
+	Kind         string   `json:"kind" jsonschema:"template to scaffold: nextjs | static-html | streamlit | fastapi | automation | python-script | custom"`
 	StartCommand []string `json:"start_command,omitempty" jsonschema:"argv array. REQUIRED only when kind=custom; ignored otherwise. Example: ['node', 'server.js']"`
 	Port         int      `json:"port,omitempty" jsonschema:"override the default port for the kind (static-html 8000, streamlit 8501, fastapi 8000). Most kinds work fine on defaults."`
 }
