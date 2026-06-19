@@ -28,7 +28,7 @@ PROV_VERSION ?= $(shell date -u +%Y.%m.%d)-$(shell git rev-parse --short HEAD 2>
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
-VERSION ?= v0.5.3
+VERSION ?= v0.6.2
 RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
 
 # Multi-arch builder for GHCR images. Created once with
@@ -120,10 +120,12 @@ release:
 			-o /tmp/agentry-release/$(VERSION)/agentry-$$os-$$arch$$ext ./cmd/cli; \
 	done
 	@cd /tmp/agentry-release/$(VERSION) && shasum -a 256 agentry-* > SHA256SUMS
-	@echo "→ uploading to $(LANDING_HOST):/var/www/agentry/install/$(VERSION)/"
-	scp -i $(SSH_KEY) -q -r /tmp/agentry-release/$(VERSION) $(LANDING_HOST):/var/www/agentry/install/$(VERSION)
-	@echo "→ flipping latest.txt"
-	ssh -i $(SSH_KEY) $(LANDING_HOST) 'echo $(VERSION) > /var/www/agentry/install/latest.txt && chmod -R a+r /var/www/agentry/install/$(VERSION)'
+	@echo "→ uploading to s3://$(SITE_BUCKET)/install/$(VERSION)/ (served via CloudFront at agentry.run/install)"
+	aws s3 cp /tmp/agentry-release/$(VERSION)/ s3://$(SITE_BUCKET)/install/$(VERSION)/ --recursive --cache-control "public,max-age=31536000"
+	aws s3 cp /tmp/agentry-release/$(VERSION)/SHA256SUMS s3://$(SITE_BUCKET)/install/$(VERSION)/SHA256SUMS --content-type text/plain --cache-control "public,max-age=300"
+	@echo "→ flipping latest.txt → $(VERSION)"
+	printf '%s' "$(VERSION)" | aws s3 cp - s3://$(SITE_BUCKET)/install/latest.txt --content-type text/plain --cache-control "public,max-age=60"
+	aws cloudfront create-invalidation --distribution-id $(SITE_DIST) --paths /install/latest.txt >/dev/null
 	@echo "→ verifying public download"
 	@curl -sfL -o /tmp/agentry-release-check "https://agentry.run/install/$(VERSION)/agentry-darwin-arm64" && \
 		file /tmp/agentry-release-check | grep -q "Mach-O 64-bit executable arm64" && \
