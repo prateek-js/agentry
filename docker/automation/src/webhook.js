@@ -12,9 +12,7 @@ const webhooks = new Map() // name -> { handler, verify }
 // handler({ body, raw, headers, log }) → string | Response | void.
 export function withWebhook(name, handler, opts = {}) {
   const kind = opts.verify || 'none'
-  webhooks.set(name, { handler, verify: kind })
-
-  return async function POST(request) {
+  const post = async function POST(request) {
     const raw = await request.text()
     if (kind !== 'none') {
       const ok = verify(kind, { rawBody: raw, getHeader: (h) => request.headers.get(h) })
@@ -32,10 +30,21 @@ export function withWebhook(name, handler, opts = {}) {
     if (res.status === 'error') return new Response('handler error', { status: 500 })
     return new Response(res.output || 'ok', { status: 200 })
   }
+  webhooks.set(name, { handler, verify: kind, post })
+  return post
 }
 
 export function listWebhooks() {
   return [...webhooks.entries()].map(([name, w]) => ({ name, verify: w.verify }))
+}
+
+// dispatch routes an incoming request to the webhook registered under
+// `name` — lets one dynamic Next route (/api/hooks/[name]) serve every
+// webhook the automation defines, so the agent never wires routes by hand.
+export async function dispatch(name, request) {
+  const w = webhooks.get(name)
+  if (!w) return new Response(`no webhook named ${name}`, { status: 404 })
+  return w.post(request)
 }
 
 // replayDelivery re-runs a stored delivery's handler with its payload —

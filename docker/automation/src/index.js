@@ -9,7 +9,7 @@
 // with nothing bound, run history is in-memory + ephemeral and the
 // dashboard says so. Bind one to keep history across redeploys.
 export { defineSchedule, listSchedules, runScheduleNow } from './scheduler.js'
-export { withWebhook, listWebhooks, replayDelivery } from './webhook.js'
+export { withWebhook, listWebhooks, replayDelivery, dispatch } from './webhook.js'
 export { track, inFlight } from './runs.js'
 export { getStore } from './store/index.js'
 
