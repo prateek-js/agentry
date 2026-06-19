@@ -191,6 +191,19 @@ COPY docker/sandbox-creds.sh /etc/profile.d/sandbox-creds.sh
 # touch — see /etc/sandbox/docs/README.md for the index.
 COPY docker/docs /etc/sandbox/docs
 
+# Automation framework (skills/automation/SKILL.md). Bake the
+# @agentry/automation runtime with its DB drivers installed once, plus a
+# ready-to-run Next template the agent copies per the skill. The template
+# references the package by ABSOLUTE path so the dep still resolves after
+# the agent copies the template into /workspace and runs `npm install`.
+COPY docker/automation /opt/agentry/automation
+RUN cd /opt/agentry/automation && \
+    npm install --omit=dev --no-audit --no-fund && \
+    sed -i 's#"@agentry/automation": "file:\.\."#"@agentry/automation": "file:/opt/agentry/automation"#' template/package.json && \
+    rm -rf template/node_modules template/.next template/package-lock.json && \
+    chmod -R a+rX /opt/agentry/automation && \
+    npm cache clean --force 2>/dev/null || true
+
 # Apply filesystem hardening + install the restricted shell.
 # lockdown.sh is idempotent and best-effort; it's safe to run at build
 # time and only mutates rare paths (perms on /etc/shadow, sandbox user).
