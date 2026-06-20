@@ -63,6 +63,11 @@ DAILY USE
   agentry env set NAME [VALUE] [--sandbox <id>]   (omit VALUE → hidden prompt)
   agentry env ls [--sandbox <id>]
 
+LOOK INSIDE A SANDBOX
+  agentry sh [<sandbox>]                    interactive shell in /workspace
+  agentry logs [<sandbox>] [-f] [-n N]      project logs (-f to stream)
+  agentry vsc [<sandbox>]                   open the in-browser editor (VS Code)
+
 MULTI-ENV (profiles — one server, many configurations)
   agentry profile                          print the active profile
   agentry profile list                     table of every profile on this laptop
@@ -141,6 +146,12 @@ func dispatch(args []string) int {
 		return cmdCluster(args[1:])
 	case "sandbox":
 		return cmdSandbox(args[1:])
+	case "sh", "shell":
+		return cmdSh(args[1:])
+	case "logs":
+		return cmdLogs(args[1:])
+	case "vsc", "code", "edit":
+		return cmdVsc(args[1:])
 	case "mcp", "stdio":
 		// stdio is the legacy name kept as an alias so existing
 		// Claude Desktop / Roo configs keep working.

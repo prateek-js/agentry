@@ -28,8 +28,19 @@ PROV_VERSION ?= $(shell date -u +%Y.%m.%d)-$(shell git rev-parse --short HEAD 2>
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
-VERSION ?= v0.6.3
+VERSION ?= v0.6.6
 RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
+
+# macOS code signing for release binaries. MACOS_SIGN_ID is the Developer ID
+# Application identity (name or SHA-1) in the keychain. Notarization runs only
+# when both NOTARY_APPLE_ID and NOTARY_PASSWORD (an app-specific password) are
+# passed on the make line — never commit them. NOTARY_TEAM_ID defaults to the
+# team. The signing identity lives in the login keychain (Developer ID G2
+# intermediate must be installed, else codesign fails to build the chain).
+MACOS_SIGN_ID   ?= Developer ID Application: Ashwin Rajeeva (BQ8YBBT9ZK)
+NOTARY_TEAM_ID  ?= BQ8YBBT9ZK
+NOTARY_APPLE_ID ?=
+NOTARY_PASSWORD ?=
 
 # Multi-arch builder for GHCR images. Created once with
 # `docker buildx create --name agentry-multi --driver docker-container`.
@@ -114,6 +125,7 @@ release:
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" \
 			-o /tmp/agentry-release/$(VERSION)/agentry-$$os-$$arch$$ext ./cmd/cli; \
 	done
+	@$(MAKE) --no-print-directory sign-macos
 	@cd /tmp/agentry-release/$(VERSION) && shasum -a 256 agentry-* > SHA256SUMS
 	@echo "→ uploading to s3://$(SITE_BUCKET)/install/$(VERSION)/ (served via CloudFront at agentry.run/install)"
 	aws s3 cp /tmp/agentry-release/$(VERSION)/ s3://$(SITE_BUCKET)/install/$(VERSION)/ --recursive --cache-control "public,max-age=31536000"
@@ -125,6 +137,30 @@ release:
 	@curl -sfL -o /tmp/agentry-release-check "https://agentry.run/install/$(VERSION)/agentry-darwin-arm64" && \
 		file /tmp/agentry-release-check | grep -q "Mach-O 64-bit executable arm64" && \
 		rm /tmp/agentry-release-check && echo "✓ release $(VERSION) live at https://agentry.run/install.sh"
+
+# sign-macos: Developer ID codesign (hardened runtime + secure timestamp) the
+# darwin release binaries, then notarize if NOTARY_APPLE_ID + NOTARY_PASSWORD
+# are set. Invoked by `release`; a no-op off macOS so Linux/CI builds still run.
+# Bare CLI binaries can't be stapled (no container) — notarization registers
+# the hash with Apple so Gatekeeper passes the online check on first run.
+.PHONY: sign-macos
+sign-macos:
+	@if [ "$$(uname)" != "Darwin" ]; then echo "⚠ not on macOS — skipping codesign/notarize"; exit 0; fi
+	@echo "→ codesigning macOS binaries (Developer ID + hardened runtime + timestamp)"
+	@for b in agentry-darwin-arm64 agentry-darwin-amd64; do \
+		codesign --force --options runtime --timestamp --sign "$(MACOS_SIGN_ID)" /tmp/agentry-release/$(VERSION)/$$b || exit 1; \
+		codesign --verify --strict /tmp/agentry-release/$(VERSION)/$$b && echo "  ✓ signed $$b"; \
+	done
+	@if [ -n "$(NOTARY_APPLE_ID)" ] && [ -n "$(NOTARY_PASSWORD)" ]; then \
+		echo "→ notarizing macOS binaries"; \
+		for b in agentry-darwin-arm64 agentry-darwin-amd64; do \
+			ditto -c -k --keepParent /tmp/agentry-release/$(VERSION)/$$b /tmp/$$b.notarize.zip; \
+			xcrun notarytool submit /tmp/$$b.notarize.zip --apple-id "$(NOTARY_APPLE_ID)" --password "$(NOTARY_PASSWORD)" --team-id "$(NOTARY_TEAM_ID)" --wait || exit 1; \
+			rm -f /tmp/$$b.notarize.zip; \
+		done; \
+	else \
+		echo "⚠ notarization skipped — pass NOTARY_APPLE_ID and NOTARY_PASSWORD to enable"; \
+	fi
 
 .PHONY: images
 images:
