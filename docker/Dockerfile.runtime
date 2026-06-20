@@ -201,16 +201,25 @@ COPY docker/sandbox-creds.sh /etc/profile.d/sandbox-creds.sh
 # touch — see /etc/sandbox/docs/README.md for the index.
 COPY docker/docs /etc/sandbox/docs
 
-# Automation framework (skills/automation/SKILL.md). Bake the
-# @agentry/automation runtime with its DB drivers installed once, plus a
-# ready-to-run Next template the agent copies per the skill. The template
-# references the package by ABSOLUTE path so the dep still resolves after
-# the agent copies the template into /workspace and runs `npm install`.
+# Automation framework (skills/automation/SKILL.md). Bake a ready-to-run
+# Next.js template the agent copies per the skill.
+#
+# The @agentry/automation runtime is VENDORED INTO the template
+# (template/.agentry/automation) and referenced by a RELATIVE in-project
+# path. This is load-bearing for deploys: railpack builds the image in a
+# pristine, isolated BuildKit container that has no access to /opt — an
+# absolute `file:/opt/...` dep (or any path outside the project) is
+# unresolvable there, which is why automation image builds failed. A
+# vendored relative dep travels with the project's build context, so the
+# image builds anywhere. We also commit a lockfile so railpack's `npm ci`
+# has something in sync to install from.
 COPY docker/automation /opt/agentry/automation
 RUN cd /opt/agentry/automation && \
-    npm install --omit=dev --no-audit --no-fund && \
-    sed -i 's#"@agentry/automation": "file:\.\."#"@agentry/automation": "file:/opt/agentry/automation"#' template/package.json && \
+    mkdir -p template/.agentry/automation && \
+    cp -r src package.json template/.agentry/automation/ && \
+    sed -i 's#"@agentry/automation": "file:\.\."#"@agentry/automation": "file:./.agentry/automation"#' template/package.json && \
     rm -rf template/node_modules template/.next template/package-lock.json && \
+    (cd template && npm install --package-lock-only --no-audit --no-fund) && \
     chmod -R a+rX /opt/agentry/automation && \
     npm cache clean --force 2>/dev/null || true
 
