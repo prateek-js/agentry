@@ -28,7 +28,7 @@ PROV_VERSION ?= $(shell date -u +%Y.%m.%d)-$(shell git rev-parse --short HEAD 2>
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
-VERSION ?= v0.6.3
+VERSION ?= v0.6.4
 RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
 
 # Multi-arch builder for GHCR images. Created once with
