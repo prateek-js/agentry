@@ -5,7 +5,7 @@ process.env.AGENTRY_AUTOMATION_STORE = 'memory'
 
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { pickBackend, resetStoreForTests } from '../src/store/index.js'
+import { pickBackend, resetStoreForTests, appNamespace } from '../src/store/index.js'
 import * as memory from '../src/store/memory.js'
 import { track } from '../src/runs.js'
 import { defineSchedule, listSchedules, runScheduleNow } from '../src/scheduler.js'
@@ -31,6 +31,18 @@ check('selection: DATABASE_URL by scheme (mysql)', () =>
   assert.equal(pickBackend({ DATABASE_URL: 'mysql://u@h/d' }).kind, 'mysql'))
 check('selection: nothing → memory', () =>
   assert.equal(pickBackend({}).kind, 'memory'))
+
+// --- per-app namespacing (cross-sandbox isolation) ---
+check('namespace: different app ids → different suffixes', () =>
+  assert.notEqual(appNamespace({ AGENTRY_APP_ID: 'a' }), appNamespace({ AGENTRY_APP_ID: 'b' })))
+check('namespace: stable for the same id', () =>
+  assert.equal(appNamespace({ AGENTRY_APP_ID: 'a' }), appNamespace({ AGENTRY_APP_ID: 'a' })))
+check('namespace: empty when nothing is stamped', () =>
+  assert.equal(appNamespace({}), ''))
+check('namespace: APP_ID takes precedence over APP_NAME', () =>
+  assert.notEqual(appNamespace({ AGENTRY_APP_ID: 'a', AGENTRY_APP_NAME: 'n' }), appNamespace({ AGENTRY_APP_NAME: 'n' })))
+check('namespace: always a db-safe 16-hex fragment', () =>
+  assert.match(appNamespace({ AGENTRY_APP_ID: 'weird name!@#$' }), /^[a-f0-9]{16}$/))
 
 // --- memory backend record/list/get ---
 await (async () => {

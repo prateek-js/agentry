@@ -19,7 +19,21 @@
 //
 // Drivers are dynamic-imported so only the selected one ever loads.
 
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
+
+// appNamespace returns a short, DB-safe suffix unique to THIS app, so two
+// sandboxes/deployments that bind the SAME database never share run
+// history. Mirrors authproxy's per-app isolation: prefer the stable
+// AGENTRY_APP_ID (deployment id / sandbox id), fall back to the human
+// AGENTRY_APP_NAME slug only to avoid a hard failure, then SANDBOX_ID.
+// Empty (nothing stamped, e.g. local dev) → '' = legacy unsuffixed names,
+// one well-defined namespace. Hashing keeps it bounded and `[a-f0-9]`, so
+// it's always a safe table/collection/key fragment.
+export function appNamespace(env = process.env) {
+  const id = String(env.AGENTRY_APP_ID || env.AGENTRY_APP_NAME || env.SANDBOX_ID || '').trim()
+  if (!id) return ''
+  return createHash('sha256').update(id).digest('hex').slice(0, 16)
+}
 
 // normalizeEntry fills defaults so every backend stores the same shape.
 export function normalizeEntry(e) {
@@ -79,9 +93,10 @@ let cached = null
 export async function getStore(env = process.env) {
   if (cached) return cached
   const choice = pickBackend(env)
+  const ns = appNamespace(env)
   try {
     const mod = await loaders[choice.kind]()
-    const store = await mod.create(choice.url)
+    const store = await mod.create(choice.url, ns)
     await store.init()
     store.kind = choice.kind
     store.ephemeral = choice.kind === 'memory'

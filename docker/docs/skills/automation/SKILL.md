@@ -108,7 +108,9 @@ worth suggesting: Supabase (Postgres), Neon (Postgres), MongoDB Atlas,
 Upstash (Redis), PlanetScale (MySQL).
 
 The store is created lazily and only the matching driver loads, so binding
-a different DB later just works.
+a different DB later just works. History is namespaced per app (its own
+table / keys, derived from the app's identity), so two automations that
+bind the same database never see each other's runs.
 
 ## Guardrails
 

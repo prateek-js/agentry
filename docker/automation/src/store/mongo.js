@@ -2,15 +2,15 @@
 // Stores the normalized entry as-is (payload is a native sub-document).
 import { normalizeEntry } from './index.js'
 
-const COLL = '_agentry_runs'
-
-export async function create(url) {
+// Collection is per-app (suffix from appNamespace) so two apps sharing one
+// database never read each other's history. Empty suffix → legacy name.
+export async function create(url, suffix = '') {
   const { MongoClient } = await import('mongodb')
   const client = new MongoClient(url)
   await client.connect()
   // DB name comes from the connection string; fall back to "agentry".
   const db = client.db()
-  const col = db.collection(COLL)
+  const col = db.collection(suffix ? `_agentry_runs_${suffix}` : '_agentry_runs')
   return {
     async init() {
       await col.createIndex({ type: 1, started_at: -1 })

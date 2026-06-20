@@ -2,11 +2,12 @@
 // retention, namespaced table); payload stored as JSON.
 import { normalizeEntry } from './index.js'
 
-const TABLE = '_agentry_runs'
-
-export async function create(url) {
+// Table is per-app (suffix from appNamespace) so two apps sharing one
+// database never read each other's history. Empty suffix → legacy name.
+export async function create(url, suffix = '') {
   const mysql = await import('mysql2/promise')
   const pool = mysql.createPool(url)
+  const TABLE = suffix ? `_agentry_runs_${suffix}` : '_agentry_runs'
   return {
     async init() {
       await pool.query(`

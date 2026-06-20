@@ -3,11 +3,12 @@
 // with the app's own schema. payload is JSONB for queryable deliveries.
 import { normalizeEntry } from './index.js'
 
-const TABLE = '_agentry_runs'
-
-export async function create(url) {
+// Table is per-app (suffix from appNamespace) so two apps sharing one
+// database never read each other's history. Empty suffix → legacy name.
+export async function create(url, suffix = '') {
   const { default: pg } = await import('pg')
   const pool = new pg.Pool({ connectionString: url, max: 4 })
+  const TABLE = suffix ? `_agentry_runs_${suffix}` : '_agentry_runs'
   return {
     async init() {
       await pool.query(`

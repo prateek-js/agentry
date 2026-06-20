@@ -5,12 +5,13 @@
 // the stream entry id for O(1) lookup via a companion hash.
 import { normalizeEntry } from './index.js'
 
-const STREAM = '_agentry:runs'
-const INDEX = '_agentry:runs:byid' // uuid -> stream entry id
-
-export async function create(url) {
+// Keys are per-app (suffix from appNamespace) so two apps sharing one
+// Redis never read each other's history. Empty suffix → legacy keys.
+export async function create(url, suffix = '') {
   const { default: Redis } = await import('ioredis')
   const client = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 2 })
+  const STREAM = suffix ? `_agentry:${suffix}:runs` : '_agentry:runs'
+  const INDEX = `${STREAM}:byid` // uuid -> stream entry id
   return {
     async init() { /* streams are created on first XADD */ },
     async record(entry) {
