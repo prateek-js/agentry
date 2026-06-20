@@ -1,0 +1,40 @@
+# release.mk.example — template for maintainer publish/deploy targets.
+#
+# The real `release.mk` is gitignored because it references private
+# infrastructure (bridge host, AWS account, code-signing identity).
+# Copy this file to `release.mk`, fill in your values, and the top-level
+# Makefile will include it automatically (`-include release.mk`).
+#
+# None of this is required to build, run, or test agentry — it only
+# publishes release artifacts to a specific deployment. See the Makefile
+# for the open-source developer targets.
+
+# Bridge host you deploy cmd/bridge to (SSH).
+SSH_KEY     ?= ~/.ssh/your-key.pem
+BRIDGE_HOST ?= user@your-bridge-host
+
+# Where you publish the container images.
+RUNTIME_IMG     := your-registry/runtime:latest
+PROVISIONER_IMG := your-registry/provisioner:latest
+
+# Where `make release` uploads CLI binaries + flips latest.txt.
+SITE_BUCKET ?= your-install-bucket
+SITE_DIST   ?= YOUR_CLOUDFRONT_DIST_ID
+
+# CLI release version (bump per release).
+VERSION        ?= v0.0.0
+RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
+
+# macOS code signing (optional). MACOS_SIGN_ID is your Developer ID
+# Application identity; pass NOTARY_APPLE_ID + NOTARY_PASSWORD on the make
+# line to also notarize.
+MACOS_SIGN_ID   ?= Developer ID Application: Your Name (TEAMID)
+NOTARY_TEAM_ID  ?= TEAMID
+NOTARY_APPLE_ID ?=
+NOTARY_PASSWORD ?=
+
+BUILDX_BUILDER   ?= agentry-multi
+BUILDX_PLATFORMS ?= linux/amd64,linux/arm64
+
+# Define your release/images/bridge-deploy targets here (see the project's
+# git history for reference implementations), or keep your private copy.

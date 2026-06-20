@@ -28,3 +28,7 @@ img.png
 .idea/
 /authproxy
 data-reliability-scorecard/
+
+# Maintainer-only publish/deploy targets (references private infra). The
+# top-level Makefile `-include`s it when present. See release.mk.example.
+/release.mk
