@@ -123,7 +123,7 @@ Next steps:
      `agentry init …` command containing your token.
   2. Run that command to connect this machine.
   3. Point your AI editor at agentry over MCP:
-       { "command": "agentry", "args": ["stdio"] }
+       { "command": "agentry", "args": ["mcp"] }
 
 Docs: https://docs.agentry.run
 EOF
