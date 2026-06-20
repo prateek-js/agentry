@@ -118,10 +118,13 @@ type Config struct {
 //
 // Backend selection:
 //
-//	BACKEND=k8s     (default) — provision Pods + Services in Kubernetes
-//	BACKEND=docker            — provision containers via the local Docker daemon
+//	BACKEND=docker  (default) — provision containers via the local Docker daemon
+//	BACKEND=k8s               — NOT YET AVAILABLE (coming soon; see newBackend)
+//
+// Docker is the only supported backend today. Kubernetes (and the stronger
+// isolation runtimes that ride on it — Kata, gVisor) are on the roadmap.
 func DefaultConfig() Config {
-	backend := BackendKind(envOr("BACKEND", string(BackendK8s)))
+	backend := BackendKind(envOr("BACKEND", string(BackendDocker)))
 	// For Docker, "localhost" is the sensible default — clients call
 	// the provisioner from the same host where containers run.
 	defaultHost := "host.docker.internal"

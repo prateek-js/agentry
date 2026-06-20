@@ -80,7 +80,7 @@ func main() {
 // single-host alternative.
 func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 	switch cfg.Backend {
-	case provisioner.BackendDocker:
+	case provisioner.BackendDocker, "":
 		posture := "strict"
 		if cfg.BuilderMode {
 			posture = "builder (SYS_ADMIN, unconfined seccomp)"
@@ -94,10 +94,24 @@ func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
 		b.SetBuilderMode(cfg.BuilderMode)
 		return b, nil
-	case provisioner.BackendK8s, "":
-		log.Printf("provisioner: backend=k8s (kubeconfig=%s)", cfg.KubeconfigPath)
+
+	// Kubernetes — and the stronger-isolation runtimes that ride on it,
+	// Kata + gVisor — are on the roadmap but NOT ready: the current pod
+	// builder has no security-context hardening, no egress policy, no
+	// /dev/shm sizing, no builder mode, and the deploy/build path is
+	// Docker-only. Rather than present a half-built, unhardened backend as
+	// real, we stub it out. The WIP stays reachable for contributors behind
+	// an explicit experimental opt-in (BACKEND=k8s-experimental).
+	case provisioner.BackendK8s, "kata", "gvisor":
+		return nil, fmt.Errorf("the %q backend isn't available yet — Kubernetes, Kata, and "+
+			"gVisor support are coming soon. Use BACKEND=docker today (the supported backend)", cfg.Backend)
+	case "k8s-experimental":
+		log.Printf("provisioner: WARNING backend=k8s is EXPERIMENTAL and INCOMPLETE — " +
+			"no security-context hardening, no egress policy, no /dev/shm sizing, no deploy/build. " +
+			"Development only; do not run untrusted workloads on it.")
 		return provisioner.NewK8sClient(cfg.KubeconfigPath)
+
 	default:
-		return nil, fmt.Errorf("unknown backend %q (want k8s or docker)", cfg.Backend)
+		return nil, fmt.Errorf("unknown backend %q (supported: docker)", cfg.Backend)
 	}
 }
