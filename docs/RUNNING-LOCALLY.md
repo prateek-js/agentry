@@ -101,7 +101,7 @@ single-user use.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BACKEND` | `k8s` | `docker` for a single host; `k8s` for a cluster. |
+| `BACKEND` | `docker` | The supported backend. `k8s`/`kata`/`gvisor` return "coming soon". |
 | `SANDBOX_IMAGE` | `agentry/runtime:latest` | Image each sandbox runs. |
 | `PROVISIONER_ADDR` | `127.0.0.1:8002` | Listen address. |
 | `NODE_HOST` | `localhost` (docker) | Host clients use to reach sandbox ports. |
@@ -112,7 +112,6 @@ single-user use.
 | `AGENTRY_CERT_DIR` | — | Enables the mTLS/enroll flow + runtime API key. **Leave unset for local dev.** |
 | `AGENTRY_BRIDGE_URL` | — | Dial out to a bridge. Leave unset for local. |
 | `AGENTRY_RUNTIME_API_KEY` | — | Override the auto-managed runtime key. |
-| `BACKEND=k8s` knobs | — | `K8S_NAMESPACE`, `KUBECONFIG_PATH`. |
 
 ### runtime (`cmd/runtime`) — runs inside the sandbox
 

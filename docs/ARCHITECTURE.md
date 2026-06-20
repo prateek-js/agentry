@@ -44,9 +44,11 @@ The daemon that runs **on your machine** and owns sandbox lifecycle. It
 listens on `127.0.0.1:8002` (loopback by default; override with
 `PROVISIONER_ADDR`) and:
 
-- creates/destroys sandboxes via a **backend** — `BACKEND=docker` (local
-  Docker daemon) or `BACKEND=k8s` (Pods + Services). Each sandbox runs the
-  runtime image.
+- creates/destroys sandboxes via a **backend**. `BACKEND=docker` (the local
+  Docker daemon) is the supported backend today; each sandbox runs the
+  runtime image. A Kubernetes backend — and the stronger-isolation runtimes
+  that ride on it, Kata and gVisor — are on the roadmap (`BACKEND=k8s`
+  currently returns "coming soon"; see [Backends](#backends)).
 - reverse-proxies `/api/sandboxes/{id}/runtime/*` to that sandbox's runtime,
   so the runtime port never has to be exposed.
 - manages bindings, build/deploy, TTL reaping, and (in hosted mode) an
@@ -120,13 +122,31 @@ follow) pass through the same path.
   so a co-located process or SSRF that reaches the runtime's loopback port
   can't drive it. With no cert dir (pure local dev) the key is empty and the
   runtime accepts unauthenticated calls.
-- **Sandbox isolation** comes from the backend (Docker/K8s). A
-  `BACKEND=k8s` deployment can select gVisor/Kata/Firecracker via
-  `runtime_class` for stronger isolation. The provisioner can also apply a
-  default egress policy and shm sizing.
+- **Sandbox isolation** comes from the backend. Today that's Docker, with a
+  hardened security posture (cap-drop, no-new-privileges, seccomp) plus an
+  optional egress policy and shm sizing. Stronger-isolation runtimes
+  (gVisor, Kata) will arrive with the Kubernetes backend — see
+  [Backends](#backends).
 - **Cert issuance is not in this repo.** Enrollment + CA signing live in the
   closed control plane; the OSS bridge only *consumes* a CA cert. For a
   self-hosted mTLS setup you supply your own CA (see RUNNING-LOCALLY.md).
+
+## Backends
+
+The provisioner is backend-agnostic behind a small `Backend` interface
+(create/delete pod + service, exec, list, annotations). Today there is one
+production backend:
+
+| Backend | Status | Notes |
+|---|---|---|
+| **Docker** (`BACKEND=docker`) | **Supported** | Single host. Hardened security posture, egress policy, shm sizing, in-sandbox image builds, and deployments all work. This is what the hosted product runs. |
+| **Kubernetes** (`BACKEND=k8s`) | **Coming soon** | A pod/service implementation exists but is incomplete (no security-context hardening, egress, shm sizing, or deploy path) and untested — it's gated off and returns "coming soon." A contributor opt-in (`BACKEND=k8s-experimental`) exposes the WIP. |
+| **Kata / gVisor** | **Coming soon** | Stronger sandbox isolation, selected per-pod via `runtime_class` once the Kubernetes backend lands. |
+
+If you want to help land the Kubernetes/Kata/gVisor backends, the interface
+to implement is `Backend` in `pkg/provisioner/provisioner.go`; the Docker
+backend (`docker_client.go`) is the reference for the full feature set
+(security posture, egress, shm, builder mode).
 
 ## What's open vs. hosted (recap)
 

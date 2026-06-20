@@ -10,7 +10,7 @@ your machine.
  AI client (Claude Code / Cursor / Roo …)
         │  MCP over stdio
         ▼
-   agentry CLI ──mTLS──► bridge ──mTLS──► provisioner ──► Docker / K8s
+   agentry CLI ──mTLS──► bridge ──mTLS──► provisioner ──► Docker
    (your laptop)        (routing pivot)   (your machine)    runs the sandbox
                                                                   │
                                                             agentry runtime
@@ -44,7 +44,7 @@ The OSS engine does not require it.
 | Path | Component | What it does |
 |---|---|---|
 | `cmd/runtime` | **runtime** | Runs inside every sandbox container. HTTP API for shell, files, ports, a code interpreter, and the in-browser editor. |
-| `cmd/provisioner` | **provisioner** | Runs on your machine. Creates/destroys sandboxes (Docker or Kubernetes backend) and reverse-proxies to each sandbox's runtime. |
+| `cmd/provisioner` | **provisioner** | Runs on your machine. Creates/destroys sandboxes (Docker backend today; Kubernetes/Kata/gVisor coming soon) and reverse-proxies to each sandbox's runtime. |
 | `cmd/bridge` | **bridge** | Stateless mTLS/yamux routing pivot that lets a remote CLI reach a provisioner behind NAT. Optional for local use. |
 | `cmd/cli` | **agentry** CLI | What you run. Speaks MCP over stdio to AI clients; `sh`/`logs`/`vsc` to look inside a sandbox. |
 | `cmd/authproxy` | **authproxy** | Optional auth sidecar baked into deployed apps (email/password + OAuth). |
