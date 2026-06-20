@@ -177,6 +177,16 @@ RUN mkdir -p /etc/containers && \
     printf '[containers]\ndefault_ulimits = []\n' \
         > /etc/containers/containers.conf
 
+# In-browser editor (code-server) for `agentry vsc` and the dashboard's
+# "Open editor". The standalone installer picks the right arch (each
+# buildx platform runs this on its native arch). The runtime starts it
+# lazily per sandbox (pkg/handlers/ide.go) on loopback — it never runs
+# unless someone opens the editor — and serves it through the app proxy.
+RUN curl -fsSL https://code-server.dev/install.sh | sh -s -- --method standalone --prefix /usr/lib/code-server && \
+    ln -sf /usr/lib/code-server/bin/code-server /usr/local/bin/code-server && \
+    code-server --version && \
+    rm -rf /tmp/* ~/.cache
+
 # Runtime binary, security hardening, and credential plumbing.
 COPY --from=builder /out/agentry-runtime /usr/local/bin/agentry-runtime
 # m2: auth sidecar. project_start spawns this when the operator's

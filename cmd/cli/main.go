@@ -150,6 +150,8 @@ func dispatch(args []string) int {
 		return cmdSh(args[1:])
 	case "logs":
 		return cmdLogs(args[1:])
+	case "vsc", "code", "edit":
+		return cmdVsc(args[1:])
 	case "mcp", "stdio":
 		// stdio is the legacy name kept as an alias so existing
 		// Claude Desktop / Roo configs keep working.

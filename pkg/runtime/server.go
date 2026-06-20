@@ -205,6 +205,10 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 	mux.HandleFunc("/v1/proxy/{port}/{rest...}", handlers.AppProxyHandler)
 	mux.HandleFunc("/v1/proxy/{port}", handlers.AppProxyHandler)
 
+	// In-browser editor (code-server): lazy-started on loopback, served
+	// through the app proxy above on its port. See pkg/handlers/ide.go.
+	mux.HandleFunc("POST /v1/ide/start", handlers.IDEStartHandler)
+
 	// Port forwarding is handled OUTSIDE the mux as the CONNECT verb
 	// (see connectInterceptor) — anything that speaks TCP can ride it.
 
