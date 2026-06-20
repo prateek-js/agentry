@@ -836,7 +836,7 @@ func buildProjectScaffold(name, kind string, customStart []string, port int) (pr
 				AutoRestart:  true,
 			},
 			copyFrom: automationTemplateDir,
-			nextStep: fmt.Sprintf("Automation scaffolded from the template. Next: (1) `npm install` in %s, (2) write your schedules in automations/jobs.ts (defineSchedule) and webhooks in automations/hooks.ts (withWebhook) — read skills/automation/SKILL.md first, (3) project_start with name=%q. The control panel (runs, payloads, Run-now, Replay) is at /_agentry. Run history persists to a bound DB (postgres/mysql/mongo/redis) — tell the user to `agentry service bind postgres` for durable history, else it's ephemeral.", filepath.Join("/workspace/projects", name), name),
+			nextStep: fmt.Sprintf("Automation scaffolded from the template. Next: (1) `npm install` in %s, (2) write your schedules in automations/jobs.ts (defineSchedule) and webhooks in automations/hooks.ts (withWebhook) — read skills/automation/SKILL.md first, (3) project_start with name=%q. The control panel (runs, payloads, Run-now, Replay) is at /_agentry and shows the LIVE storage backend. Run history persists to a bound DB (postgres/mysql/mongo/redis); it's in-memory only when none is bound. The backend is chosen at process start, so after `agentry service bind postgres` you MUST restart the automation (project_stop then project_start) for it to take effect — then confirm /_agentry shows `storage: postgres`. Report the actual backend from the panel; never assume \"ephemeral\".", filepath.Join("/workspace/projects", name), name),
 		}, nil
 
 	case "custom":

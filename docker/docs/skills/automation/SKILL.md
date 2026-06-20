@@ -91,26 +91,42 @@ export const onPush = withWebhook('github-push', async ({ body, log }) => {
 - Every delivery is recorded with its payload; the panel shows it and
   offers **Replay** (re-runs the handler with the stored payload).
 
-## Storage — bind a DB or it's ephemeral
+## Storage — runs persist to the bound DB
 
 Runs and deliveries persist to whatever database the operator binds; the
 DB is the customer's, so there is no retention policy and no SQLite/local
-volume. Supported, picked automatically in this order:
+volume. The backend is auto-selected, first match wins:
 
 `AGENTRY_AUTOMATION_STORE` (override) → `POSTGRES_URL` → `MYSQL_URL` →
 `MONGODB_URL` → `REDIS_URL` → `DATABASE_URL` (by scheme) → **in-memory**.
 
-With nothing bound it falls back to in-memory and the panel says
-**ephemeral** — history resets on every redeploy. If the user wants
-durable history, tell them to bind one (e.g. `agentry service bind
-postgres`); the app picks it up on next start, no code change. Free tiers
-worth suggesting: Supabase (Postgres), Neon (Postgres), MongoDB Atlas,
-Upstash (Redis), PlanetScale (MySQL).
+**Check the live backend, don't guess.** The panel header and
+`GET /_agentry/data` report it as `storage.backend` + `storage.ephemeral`
+(`postgres · persistent`, `memory · ephemeral`, …). That is the single
+source of truth — both the panel AND the run writer read the same store, so
+what the panel shows is exactly where runs are going.
 
-The store is created lazily and only the matching driver loads, so binding
-a different DB later just works. History is namespaced per app (its own
-table / keys, derived from the app's identity), so two automations that
-bind the same database never see each other's runs.
+### The backend is chosen ONCE, at process start
+
+The store is a process-wide singleton, selected the first time the app runs
+and fixed for the life of that process. **Binding a DB to an
+already-running automation changes nothing until you restart it.** So when a
+user asks for durable history:
+
+1. `agentry service bind postgres` (or any supported DB)
+2. restart the automation — `project_stop` then `project_start` (or
+   redeploy). Without this it keeps writing to the old (in-memory) store.
+3. confirm `/_agentry` now shows `storage: postgres · persistent`
+
+Only report storage to the user from what the panel shows in step 3 — never
+say "ephemeral" once a DB is bound and the app has been restarted, and never
+say "persistent" before confirming. Free tiers worth suggesting if they have
+none: Supabase / Neon (Postgres), MongoDB Atlas, Upstash (Redis),
+PlanetScale (MySQL).
+
+History is namespaced per app (its own table / keys, derived from the app's
+identity), so two automations that bind the same database never see each
+other's runs.
 
 ## Guardrails
 
