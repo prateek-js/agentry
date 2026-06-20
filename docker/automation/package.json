@@ -1,0 +1,20 @@
+{
+  "name": "@agentry/automation",
+  "version": "0.1.0",
+  "description": "Opinionated automation runtime for agentry: scheduler, webhooks, and a built-in control panel backed by whatever DB you bind.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./store": "./src/store/index.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "croner": "^8.1.0",
+    "ioredis": "^5.4.0",
+    "mongodb": "^6.8.0",
+    "mysql2": "^3.11.0",
+    "pg": "^8.12.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

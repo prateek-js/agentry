@@ -1,0 +1,26 @@
+{
+  "name": "agentry-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p ${PORT:-3000}",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000}"
+  },
+  "dependencies": {
+    "@agentry/automation": "file:..",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "croner": "^8.1.0",
+    "ioredis": "^5.4.0",
+    "mongodb": "^6.8.0",
+    "mysql2": "^3.11.0",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0"
+  }
+}

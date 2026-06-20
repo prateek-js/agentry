@@ -197,6 +197,10 @@ func cmdLogout(_ []string) int {
 	cfg.APIToken = ""
 	cfg.Org = ""
 	cfg.UserEmail = ""
+	// The server pin is account-scoped — a server belongs to the org you
+	// were logged into. Clear it too so a later login/init for another
+	// account never inherits a stale selection.
+	cfg.Cluster = ""
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
 	}

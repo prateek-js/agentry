@@ -5,10 +5,10 @@
 # reaching for a shortcut, extend the Makefile instead — the next
 # operator will thank you.
 
-SSH_KEY     ?= ~/.ssh/acceldata_hz
-BRIDGE_HOST ?= root@49.12.104.190
-PROV_HOST   ?= root@46.224.166.75
-LANDING_HOST ?= root@188.34.177.4
+# AWS (account 206579390825, us-east-1). app + bridge run on Graviton
+# (arm64) EC2; the SSH key + migration state live under ~/.agentry-migrate.
+SSH_KEY     ?= ~/.agentry-migrate/agentry-aws.pem
+BRIDGE_HOST ?= ubuntu@18.235.159.224
 
 RUNTIME_IMG     := ghcr.io/agentry-ai/runtime:latest
 PROVISIONER_IMG := ghcr.io/agentry-ai/sandbox-provisioner:latest
@@ -28,7 +28,7 @@ PROV_VERSION ?= $(shell date -u +%Y.%m.%d)-$(shell git rev-parse --short HEAD 2>
 GO ?= go
 
 # CLI release: bump VERSION when shipping a new build to agentry.run.
-VERSION ?= v0.5.3
+VERSION ?= v0.6.3
 RELEASE_ARCHES := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64 windows-arm64
 
 # Multi-arch builder for GHCR images. Created once with
@@ -56,17 +56,12 @@ cli:
 
 .PHONY: bridge-deploy
 bridge-deploy:
-	@echo "→ building agentry-bridge for linux/amd64"
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o /tmp/agentry-bridge ./cmd/bridge
+	@echo "→ building agentry-bridge for linux/arm64 (AWS Graviton)"
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build -o /tmp/agentry-bridge ./cmd/bridge
 	@echo "→ shipping to $(BRIDGE_HOST)"
 	scp -i $(SSH_KEY) /tmp/agentry-bridge $(BRIDGE_HOST):/tmp/agentry-bridge.new
-	ssh -i $(SSH_KEY) $(BRIDGE_HOST) 'mv /usr/local/bin/agentry-bridge /usr/local/bin/agentry-bridge.bak.$$(date +%s) && mv /tmp/agentry-bridge.new /usr/local/bin/agentry-bridge && chmod +x /usr/local/bin/agentry-bridge && systemctl restart agentry-bridge && sleep 2 && systemctl is-active agentry-bridge'
+	ssh -i $(SSH_KEY) $(BRIDGE_HOST) 'sudo mv /usr/local/bin/agentry-bridge /usr/local/bin/agentry-bridge.bak.$$(date +%s) && sudo mv /tmp/agentry-bridge.new /usr/local/bin/agentry-bridge && sudo chmod +x /usr/local/bin/agentry-bridge && sudo systemctl restart agentry-bridge && sleep 2 && systemctl is-active agentry-bridge'
 	@echo "✓ bridge restarted"
-
-.PHONY: sync-src
-sync-src:
-	@echo "→ rsync source to $(PROV_HOST):/root/agentry-src/"
-	rsync -az --delete --exclude='.git' --exclude='node_modules' --exclude='bin/' --exclude='dist/' --exclude='*.bak.*' -e "ssh -i $(SSH_KEY)" ./ $(PROV_HOST):/root/agentry-src/
 
 # RETIRED: provisioner-deploy / runtime-deploy did a single-arch
 # `docker build` on an amd64 host and pushed it to :latest. That
@@ -96,14 +91,14 @@ smoke-login:
 #
 #   make release VERSION=v0.x.y
 #     Cross-compile the agentry CLI for the four supported platforms,
-#     scp into /var/www/agentry/install/VERSION/, then flip latest.txt
+#     upload to s3://$(SITE_BUCKET)/install/VERSION/, then flip latest.txt
 #     so `curl agentry.run/install.sh | sh` picks it up.
 #
 #   make images
 #     buildx-build BOTH ghcr.io images as multi-arch (amd64 + arm64).
-#     Mac arm users pulling :latest now get arm64 layers transparently;
-#     Hetzner amd64 still works. amd64 builds run under emulation on
-#     Mac (slow once for the runtime image, acceptable for releases).
+#     Ships both arches: arm64 (Apple Silicon, AWS Graviton) + amd64.
+#     amd64 builds run under emulation on Mac (slow once for the runtime
+#     image, acceptable for releases).
 #
 # Both targets do their own integrity check (curl HEAD; manifest
 # inspect) at the end so a partial upload doesn't ship silently.
@@ -120,10 +115,12 @@ release:
 			-o /tmp/agentry-release/$(VERSION)/agentry-$$os-$$arch$$ext ./cmd/cli; \
 	done
 	@cd /tmp/agentry-release/$(VERSION) && shasum -a 256 agentry-* > SHA256SUMS
-	@echo "→ uploading to $(LANDING_HOST):/var/www/agentry/install/$(VERSION)/"
-	scp -i $(SSH_KEY) -q -r /tmp/agentry-release/$(VERSION) $(LANDING_HOST):/var/www/agentry/install/$(VERSION)
-	@echo "→ flipping latest.txt"
-	ssh -i $(SSH_KEY) $(LANDING_HOST) 'echo $(VERSION) > /var/www/agentry/install/latest.txt && chmod -R a+r /var/www/agentry/install/$(VERSION)'
+	@echo "→ uploading to s3://$(SITE_BUCKET)/install/$(VERSION)/ (served via CloudFront at agentry.run/install)"
+	aws s3 cp /tmp/agentry-release/$(VERSION)/ s3://$(SITE_BUCKET)/install/$(VERSION)/ --recursive --cache-control "public,max-age=31536000"
+	aws s3 cp /tmp/agentry-release/$(VERSION)/SHA256SUMS s3://$(SITE_BUCKET)/install/$(VERSION)/SHA256SUMS --content-type text/plain --cache-control "public,max-age=300"
+	@echo "→ flipping latest.txt → $(VERSION)"
+	printf '%s' "$(VERSION)" | aws s3 cp - s3://$(SITE_BUCKET)/install/latest.txt --content-type text/plain --cache-control "public,max-age=60"
+	aws cloudfront create-invalidation --distribution-id $(SITE_DIST) --paths /install/latest.txt >/dev/null
 	@echo "→ verifying public download"
 	@curl -sfL -o /tmp/agentry-release-check "https://agentry.run/install/$(VERSION)/agentry-darwin-arm64" && \
 		file /tmp/agentry-release-check | grep -q "Mach-O 64-bit executable arm64" && \

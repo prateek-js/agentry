@@ -1,0 +1,7 @@
+# Never ship installed deps or build output into the image — every stage
+# that needs them installs/builds fresh (Go modules, npm in the runtime
+# bake, the per-project npm install inside sandboxes).
+**/node_modules
+**/.next
+*.tsbuildinfo
+.git

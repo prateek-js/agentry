@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // EnrollRequest is the wire shape the control plane's /api/v1/enroll
@@ -53,8 +55,22 @@ func cmdInit(args []string) int {
 	appURL := fs.String("app-url", "", "control-plane URL (e.g. https://app.agentry.run)")
 	token := fs.String("token", "", "enrollment token (else prompted)")
 	name := fs.String("name", "", "device name (else inferred from hostname)")
+	force := fs.Bool("force", false, "replace an existing config without confirming")
+	fs.BoolVar(force, "y", false, "alias for --force")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	// init sets up this machine from scratch. If a config already exists
+	// (e.g. from a previous account), replacing it is destructive — it
+	// drops the old login, server pin, and device cert. Confirm first so
+	// switching accounts on the same machine never silently inherits the
+	// old account's stale server selection.
+	if existing, path, err := LoadConfig(); err == nil && existing.configured() && !*force {
+		if !confirmReplace(existing, path) {
+			fmt.Fprintln(os.Stderr, "agentry: init aborted; existing config left unchanged")
+			return 1
+		}
 	}
 
 	if *appURL == "" {
@@ -129,23 +145,20 @@ func cmdInit(args []string) int {
 		return die("write CA: %v", err)
 	}
 
-	// Preserve everything `login` writes (PAT + org metadata) and the
-	// user's last cluster selection. `init` only owns the cert + bridge
-	// fields; clobbering APIToken here strands the user with a device
-	// cert but no control-plane auth, which breaks `agentry cluster ls`
-	// and every other PAT-gated CLI path.
-	existing, _, _ := LoadConfig()
-	if existing == nil {
-		existing = &Config{}
+	// Fresh config. init sets up THIS machine from scratch: we never
+	// inherit a previous account's PAT, org, or server pin — carrying
+	// those across an account switch is exactly the cross-account
+	// staleness this command is meant to clear (the user confirmed the
+	// replace above). The user re-runs `agentry login` for the new
+	// account afterward.
+	cfg := &Config{
+		AppURL:         strings.TrimRight(*appURL, "/"),
+		BrokerURL:      resp.BridgeURL,
+		DeviceID:       deviceName,
+		DeviceCertPath: certPath,
+		DeviceKeyPath:  keyPath,
+		CACertPath:     caPath,
 	}
-	existing.AppURL = strings.TrimRight(*appURL, "/")
-	existing.BrokerURL = resp.BridgeURL
-	existing.DeviceID = deviceName
-	existing.DeviceCertPath = certPath
-	existing.DeviceKeyPath = keyPath
-	existing.CACertPath = caPath
-	cfg := existing
-	cluster := cfg.Cluster
 	if err := cfg.Save(); err != nil {
 		return die("save config: %v", err)
 	}
@@ -155,13 +168,33 @@ func cmdInit(args []string) int {
 	fmt.Printf("  bridge:  %s\n", cfg.BrokerURL)
 	fmt.Printf("  device:  %s\n", cfg.DeviceID)
 	fmt.Printf("  cert:    %s (valid until %s)\n", cfg.DeviceCertPath, resp.ExpiresAt)
-	if cluster == "" {
-		fmt.Println()
-		fmt.Println("Next: run `agentry server` to pick a target server, then point your AI client at `agentry stdio`.")
-	} else {
-		fmt.Printf("  server:  %s\n", cluster)
-	}
+	fmt.Println()
+	fmt.Println("Next: run `agentry login` to sign in, `agentry server` to pick a target, then point your AI client at `agentry mcp`.")
 	return 0
+}
+
+// confirmReplace warns that init will discard an existing config and
+// asks for a y/N confirmation. On a non-interactive stdin it refuses
+// (returns false) rather than silently clobbering — the caller can pass
+// --force for the headless path.
+func confirmReplace(existing *Config, path string) bool {
+	fmt.Fprintf(os.Stderr, "An agentry config already exists at %s:\n", path)
+	if existing.UserEmail != "" {
+		fmt.Fprintf(os.Stderr, "  account: %s\n", existing.UserEmail)
+	}
+	if existing.DeviceID != "" {
+		fmt.Fprintf(os.Stderr, "  device:  %s\n", existing.DeviceID)
+	}
+	if existing.Cluster != "" {
+		fmt.Fprintf(os.Stderr, "  server:  %s\n", existing.Cluster)
+	}
+	fmt.Fprintln(os.Stderr, "Continuing will REPLACE it with a fresh setup — the old login, server pin, and device cert are discarded.")
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(os.Stderr, "Re-run with --force to replace it non-interactively.")
+		return false
+	}
+	ans := strings.ToLower(prompt("Replace it? [y/N]: "))
+	return ans == "y" || ans == "yes"
 }
 
 // encodePrivateKey writes the ECDSA private key in PKCS#8 PEM form —

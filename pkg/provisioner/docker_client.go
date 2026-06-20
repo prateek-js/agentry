@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -578,18 +579,51 @@ func (d *DockerBackend) dropOverlay(name string) {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 func (d *DockerBackend) ensureImage(ctx context.Context, ref string) error {
-	// Fast path: the image is already on disk.
-	if _, err := d.cli.ImageInspect(ctx, ref); err == nil {
+	_, inspectErr := d.cli.ImageInspect(ctx, ref)
+	present := inspectErr == nil
+
+	// A pinned tag or digest is content-stable, so a local copy is
+	// authoritative — skip the registry round-trip. But a mutable tag
+	// (:latest) on disk may be stale: a freshly launched sandbox must not
+	// silently reuse an old :latest after a new image was pushed. Always
+	// re-pull mutable tags so new sandboxes land on the current image.
+	if present && !isMutableTag(ref) {
 		return nil
 	}
+
 	rc, err := d.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
+		// Best-effort refresh: if we already have a copy (e.g. offline
+		// air-gap or a transient registry hiccup), use it rather than
+		// failing sandbox creation. Only a missing image is fatal.
+		if present {
+			log.Printf("ensureImage: refresh of %s failed (%v); using cached image", ref, err)
+			return nil
+		}
 		return fmt.Errorf("image pull: %w", err)
 	}
 	defer rc.Close()
 	// Drain the progress stream so the pull actually completes.
 	_, err = io.Copy(io.Discard, rc)
 	return err
+}
+
+// isMutableTag reports whether ref points at a tag whose contents can change
+// under us — i.e. ":latest" or an untagged ref (which Docker treats as
+// :latest). Digest pins ("@sha256:…") and explicit version tags are stable.
+func isMutableTag(ref string) bool {
+	if strings.Contains(ref, "@") {
+		return false // digest-pinned
+	}
+	name := ref
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:] // drop registry host:port + path
+	}
+	colon := strings.LastIndex(name, ":")
+	if colon < 0 {
+		return true // no tag → :latest implied
+	}
+	return name[colon+1:] == "latest"
 }
 
 func isConflictErr(err error) bool {

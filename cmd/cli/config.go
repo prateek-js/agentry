@@ -51,6 +51,16 @@ type Config struct {
 	UserEmail string `json:"user_email,omitempty"` // cached user email (display only)
 }
 
+// configured reports whether this config holds a real prior setup —
+// used by `init` to decide if it must confirm before replacing it. A
+// zero-value or empty file is not "configured". Safe on a nil receiver.
+func (c *Config) configured() bool {
+	if c == nil {
+		return false
+	}
+	return c.AppURL != "" || c.DeviceID != "" || c.APIToken != "" || c.Cluster != ""
+}
+
 // ConfigPath returns the canonical path. Uses $AGENTRY_CONFIG to
 // override for tests / multi-profile setups; defaults to
 // ~/.agentry/agentry.json.
