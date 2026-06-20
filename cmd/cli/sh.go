@@ -6,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -64,20 +62,15 @@ func cmdSh(args []string) int {
 	}
 	defer term.Restore(stdinFd, old)
 
-	// Resize on terminal-window change.
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-	go func() {
-		for range winch {
-			w, h, e := term.GetSize(stdinFd)
-			if e != nil {
-				continue
-			}
-			msg, _ := json.Marshal(map[string]any{"type": "resize", "rows": h, "cols": w})
-			_ = conn.WriteMessage(websocket.TextMessage, msg)
+	// Resize on terminal-window change (Unix; no-op on Windows).
+	onResize(func() {
+		w, h, e := term.GetSize(stdinFd)
+		if e != nil {
+			return
 		}
-	}()
+		msg, _ := json.Marshal(map[string]any{"type": "resize", "rows": h, "cols": w})
+		_ = conn.WriteMessage(websocket.TextMessage, msg)
+	})
 
 	// Local stdin → PTY stdin frames.
 	go func() {
