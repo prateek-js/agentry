@@ -161,7 +161,7 @@ A JSON response listing the tools means the whole path
 | Variable | Default | Purpose |
 |---|---|---|
 | `BACKEND` | `docker` | The supported backend. `k8s`/`kata`/`gvisor` return "coming soon". |
-| `SANDBOX_IMAGE` | `agentry/runtime:latest` | Image each sandbox runs. |
+| `SANDBOX_IMAGE` | `ghcr.io/agentry-ai/runtime:latest` | Image each sandbox runs. The default is the published image, pulled on first use. `make`-based local dev overrides this with the locally-built `agentry/runtime:latest`. |
 | `PROVISIONER_ADDR` | `127.0.0.1:8002` | Listen address. |
 | `NODE_HOST` | `localhost` (docker) | Host clients use to reach sandbox ports. |
 | `SANDBOX_DEFAULT_SHM_SIZE` | `2Gi` | `/dev/shm` per sandbox (`0` = Docker default). |
