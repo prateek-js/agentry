@@ -565,4 +565,3 @@ func firstLine(s string, max int) string {
 	}
 	return ""
 }
-

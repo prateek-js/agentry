@@ -71,10 +71,10 @@ func TestCreateSandbox_NoCollision_KeepsRequestedName(t *testing.T) {
 	}
 }
 
-// 2. Collision + reuse_existing=true → reuses the existing sandbox.
-//    This is the "agentry attach <name>" semantics — explicitly opted
-//    in by the caller, so silently returning the existing pod is the
-//    intended outcome.
+//  2. Collision + reuse_existing=true → reuses the existing sandbox.
+//     This is the "agentry attach <name>" semantics — explicitly opted
+//     in by the caller, so silently returning the existing pod is the
+//     intended outcome.
 func TestCreateSandbox_Collision_ReuseExisting_ReturnsSame(t *testing.T) {
 	ts, mock := newTestProvisioner(t, "secret")
 	// First create.
@@ -100,9 +100,9 @@ func TestCreateSandbox_Collision_ReuseExisting_ReturnsSame(t *testing.T) {
 	}
 }
 
-// 3. Collision without reuse_existing → fresh suffixed sandbox.
-//    THIS IS THE FIX for the ecommerce-store bug. Both chats stay
-//    isolated even though both posted the same name.
+//  3. Collision without reuse_existing → fresh suffixed sandbox.
+//     THIS IS THE FIX for the ecommerce-store bug. Both chats stay
+//     isolated even though both posted the same name.
 func TestCreateSandbox_Collision_DefaultAllocatesSuffixedFresh(t *testing.T) {
 	ts, mock := newTestProvisioner(t, "secret")
 
@@ -143,10 +143,10 @@ func TestCreateSandbox_Collision_DefaultAllocatesSuffixedFresh(t *testing.T) {
 	}
 }
 
-// 4. The spec recorded for the second sandbox uses the suffixed id —
-//    NOT the requested id. If the spec.SandboxID were the requested
-//    name, AGENTRY_APP_NAME / pod labels would collide downstream and
-//    the bug would manifest at a different layer.
+//  4. The spec recorded for the second sandbox uses the suffixed id —
+//     NOT the requested id. If the spec.SandboxID were the requested
+//     name, AGENTRY_APP_NAME / pod labels would collide downstream and
+//     the bug would manifest at a different layer.
 func TestCreateSandbox_Collision_SpecCarriesAllocatedID(t *testing.T) {
 	ts, mock := newTestProvisioner(t, "secret")
 	_, _ = postCreate(t, ts.URL, "secret",
@@ -164,10 +164,10 @@ func TestCreateSandbox_Collision_SpecCarriesAllocatedID(t *testing.T) {
 	}
 }
 
-// 5. The suffix loop must skip a randomly-collided candidate and try
-//    again. Stub crypto/rand so the first two attempts pick a name
-//    that's already taken; assert the handler tried again and landed
-//    on the third.
+//  5. The suffix loop must skip a randomly-collided candidate and try
+//     again. Stub crypto/rand so the first two attempts pick a name
+//     that's already taken; assert the handler tried again and landed
+//     on the third.
 func TestAllocFreshSandboxID_RetriesOnSuffixCollision(t *testing.T) {
 	mock := NewMockBackend()
 	cfg := Config{Namespace: "test-ns", NodeHost: "h", Labels: map[string]string{"a": "b"}}
@@ -196,9 +196,9 @@ func TestAllocFreshSandboxID_RetriesOnSuffixCollision(t *testing.T) {
 	}
 }
 
-// 6. After running out of suffix attempts, allocFreshSandboxID errors
-//    out rather than looping forever or panicking. Pre-seed every
-//    candidate the stubbed rand can produce; assert we fail clean.
+//  6. After running out of suffix attempts, allocFreshSandboxID errors
+//     out rather than looping forever or panicking. Pre-seed every
+//     candidate the stubbed rand can produce; assert we fail clean.
 func TestAllocFreshSandboxID_FailsAfterMaxAttempts(t *testing.T) {
 	mock := NewMockBackend()
 	cfg := Config{Namespace: "test-ns", NodeHost: "h"}
@@ -215,8 +215,8 @@ func TestAllocFreshSandboxID_FailsAfterMaxAttempts(t *testing.T) {
 	}
 }
 
-// 7. End-to-end: the handler returns 500 if collision can't be
-//    resolved (defense — should never happen in practice).
+//  7. End-to-end: the handler returns 500 if collision can't be
+//     resolved (defense — should never happen in practice).
 func TestCreateSandbox_CollisionUnresolvable_Returns500(t *testing.T) {
 	ts, mock := newTestProvisioner(t, "secret")
 
@@ -243,9 +243,9 @@ func TestCreateSandbox_CollisionUnresolvable_Returns500(t *testing.T) {
 	}
 }
 
-// 8. sanitizeSandboxID — pin the contract that allocFreshSandboxID
-//    depends on. Bad shapes get scrubbed so the pod-name layer never
-//    sees something docker refuses.
+//  8. sanitizeSandboxID — pin the contract that allocFreshSandboxID
+//     depends on. Bad shapes get scrubbed so the pod-name layer never
+//     sees something docker refuses.
 func TestSanitizeSandboxID(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -284,7 +284,7 @@ func TestRandomHexSuffix(t *testing.T) {
 	}
 }
 
-// 10. Concurrent racing creates — N goroutines POST the same name.
+//  10. Concurrent racing creates — N goroutines POST the same name.
 //     Without the auto-suffix one of them would silently reuse and
 //     clobber. With the fix, every goroutine ends up with a distinct
 //     sandbox_id (except at most one that gets the original name).
@@ -294,10 +294,10 @@ func TestCreateSandbox_ConcurrentCollisions_AllDistinct(t *testing.T) {
 
 	const N = 16
 	var (
-		wg       sync.WaitGroup
-		seenMu   sync.Mutex
-		seen     = map[string]int{} // sandbox_id → hit count
-		fail     atomic.Int64
+		wg     sync.WaitGroup
+		seenMu sync.Mutex
+		seen   = map[string]int{} // sandbox_id → hit count
+		fail   atomic.Int64
 	)
 	for i := 0; i < N; i++ {
 		wg.Add(1)
@@ -333,7 +333,7 @@ func TestCreateSandbox_ConcurrentCollisions_AllDistinct(t *testing.T) {
 	}
 }
 
-// 11. Reuse path returns the SAME public URL as the first create.
+//  11. Reuse path returns the SAME public URL as the first create.
 //     If the URL changed under reuse semantics, callers caching it
 //     would silently start hitting the wrong sandbox.
 func TestCreateSandbox_ReuseExisting_StableURL(t *testing.T) {
@@ -350,7 +350,7 @@ func TestCreateSandbox_ReuseExisting_StableURL(t *testing.T) {
 	}
 }
 
-// 12. Auto-suffix path returns a DIFFERENT URL (different port via
+//  12. Auto-suffix path returns a DIFFERENT URL (different port via
 //     the mock backend's nextPort counter). Confirms isolation
 //     extends to the routing layer.
 func TestCreateSandbox_AutoSuffix_DifferentURL(t *testing.T) {

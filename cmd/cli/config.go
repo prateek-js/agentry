@@ -21,6 +21,7 @@ import (
 //
 // Set on `agentry server use`:
 //   - Cluster: which X-Cluster value subsequent commands stamp
+//
 // Set on `agentry profile use`:
 //   - Profile: the named env/binds slice within the active cluster
 //     ("dev", "prod", "staging", …). Empty = "default". A profile is

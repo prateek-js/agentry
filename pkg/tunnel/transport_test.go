@@ -39,8 +39,8 @@ func newSessionPair(t *testing.T) (client, server *yamux.Session) {
 	cfg := yamux.DefaultConfig()
 	cfg.LogOutput = nilWriter{}
 	var (
-		wg                       sync.WaitGroup
-		clientErr, serverErr     error
+		wg                   sync.WaitGroup
+		clientErr, serverErr error
 	)
 	wg.Add(2)
 	go func() {
@@ -429,8 +429,8 @@ func TestStreamBody_DrainsBeforeClose(t *testing.T) {
 }
 
 type trackedReader struct {
-	data []byte
-	pos  int
+	data   []byte
+	pos    int
 	closed bool
 }
 

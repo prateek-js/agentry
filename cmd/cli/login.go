@@ -21,14 +21,14 @@ import (
 // usable agentry install: it mints a PAT, enrolls a device cert, and
 // persists both to the local config. The browser flow looks like:
 //
-//   1. CLI binds a localhost listener on a random high port.
-//   2. CLI opens the user's default browser to
-//      $APP_URL/cli-login?state=<nonce>&callback=http://127.0.0.1:<port>/cb
-//   3. Dashboard forces Clerk sign-in, then renders the approval
-//      page. On click it mints a PAT (`POST /api/v1/cli-tokens`)
-//      and (in a future revision) enrolls a device cert, then POSTs
-//      the result to the callback.
-//   4. CLI validates `state`, persists, exits.
+//  1. CLI binds a localhost listener on a random high port.
+//  2. CLI opens the user's default browser to
+//     $APP_URL/cli-login?state=<nonce>&callback=http://127.0.0.1:<port>/cb
+//  3. Dashboard forces Clerk sign-in, then renders the approval
+//     page. On click it mints a PAT (`POST /api/v1/cli-tokens`)
+//     and (in a future revision) enrolls a device cert, then POSTs
+//     the result to the callback.
+//  4. CLI validates `state`, persists, exits.
 //
 // The state nonce stops a malicious browser tab from racing the
 // callback. The PAT only ever traverses loopback so it can't be

@@ -236,9 +236,9 @@ func (h *oauthHandlers) callback(w http.ResponseWriter, r *http.Request, name st
 
 // providerSpecRecord is the per-provider URL set + userinfo schema.
 type providerSpecRecord struct {
-	authorizeURL string
-	tokenURL     string
-	userinfoURL  string
+	authorizeURL  string
+	tokenURL      string
+	userinfoURL   string
 	defaultScopes []string
 	// Field names in the userinfo JSON. Defaults work for OIDC-shaped
 	// responses; GitHub's userinfo is a special shape we adapt for.
@@ -253,13 +253,13 @@ func providerSpec(name string, pcfg ProviderConfig) (providerSpecRecord, error) 
 	switch name {
 	case "google":
 		return providerSpecRecord{
-			authorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
-			tokenURL:     "https://oauth2.googleapis.com/token",
-			userinfoURL:  "https://openidconnect.googleapis.com/v1/userinfo",
+			authorizeURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+			tokenURL:      "https://oauth2.googleapis.com/token",
+			userinfoURL:   "https://openidconnect.googleapis.com/v1/userinfo",
 			defaultScopes: []string{"openid", "email", "profile"},
-			idField:    "sub",
-			emailField: "email",
-			nameField:  "name",
+			idField:       "sub",
+			emailField:    "email",
+			nameField:     "name",
 			extraAuthorizeParams: map[string]string{
 				"access_type": "online",
 				"prompt":      "select_account",
@@ -267,13 +267,13 @@ func providerSpec(name string, pcfg ProviderConfig) (providerSpecRecord, error) 
 		}, nil
 	case "github":
 		return providerSpecRecord{
-			authorizeURL: "https://github.com/login/oauth/authorize",
-			tokenURL:     "https://github.com/login/oauth/access_token",
-			userinfoURL:  "https://api.github.com/user",
+			authorizeURL:  "https://github.com/login/oauth/authorize",
+			tokenURL:      "https://github.com/login/oauth/access_token",
+			userinfoURL:   "https://api.github.com/user",
 			defaultScopes: []string{"read:user", "user:email"},
-			idField:    "id",
-			emailField: "email",
-			nameField:  "name",
+			idField:       "id",
+			emailField:    "email",
+			nameField:     "name",
 		}, nil
 	case "microsoft":
 		// We default to the common tenant — operator override via
@@ -283,13 +283,13 @@ func providerSpec(name string, pcfg ProviderConfig) (providerSpecRecord, error) 
 			issuer = "https://login.microsoftonline.com/common/v2.0"
 		}
 		return providerSpecRecord{
-			authorizeURL: strings.TrimRight(issuer, "/") + "/oauth2/v2.0/authorize",
-			tokenURL:     strings.TrimRight(issuer, "/") + "/oauth2/v2.0/token",
-			userinfoURL:  "https://graph.microsoft.com/oidc/userinfo",
+			authorizeURL:  strings.TrimRight(issuer, "/") + "/oauth2/v2.0/authorize",
+			tokenURL:      strings.TrimRight(issuer, "/") + "/oauth2/v2.0/token",
+			userinfoURL:   "https://graph.microsoft.com/oidc/userinfo",
 			defaultScopes: []string{"openid", "email", "profile"},
-			idField:    "sub",
-			emailField: "email",
-			nameField:  "name",
+			idField:       "sub",
+			emailField:    "email",
+			nameField:     "name",
 		}, nil
 	case "apple":
 		return providerSpecRecord{
@@ -299,9 +299,9 @@ func providerSpec(name string, pcfg ProviderConfig) (providerSpecRecord, error) 
 			//                  decode the id_token client-side. For v1 we
 			//                  refuse Apple SSO if we'd need userinfo.
 			defaultScopes: []string{"name", "email"},
-			idField:    "sub",
-			emailField: "email",
-			nameField:  "name",
+			idField:       "sub",
+			emailField:    "email",
+			nameField:     "name",
 			extraAuthorizeParams: map[string]string{
 				"response_mode": "form_post",
 			},
@@ -312,13 +312,13 @@ func providerSpec(name string, pcfg ProviderConfig) (providerSpecRecord, error) 
 		}
 		issuer := strings.TrimRight(pcfg.Issuer, "/")
 		return providerSpecRecord{
-			authorizeURL: issuer + "/protocol/openid-connect/auth",
-			tokenURL:     issuer + "/protocol/openid-connect/token",
-			userinfoURL:  issuer + "/protocol/openid-connect/userinfo",
+			authorizeURL:  issuer + "/protocol/openid-connect/auth",
+			tokenURL:      issuer + "/protocol/openid-connect/token",
+			userinfoURL:   issuer + "/protocol/openid-connect/userinfo",
 			defaultScopes: []string{"openid", "email", "profile"},
-			idField:    "sub",
-			emailField: "email",
-			nameField:  "name",
+			idField:       "sub",
+			emailField:    "email",
+			nameField:     "name",
 		}, nil
 	}
 	return providerSpecRecord{}, fmt.Errorf("unknown provider %q", name)

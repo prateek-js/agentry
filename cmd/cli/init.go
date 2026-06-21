@@ -40,12 +40,12 @@ type EnrollResponse struct {
 
 // cmdInit handles first-touch onboarding for a laptop:
 //
-//   1. Take token + app URL (from flags or interactive prompt)
-//   2. Generate ECDSA keypair locally — private key never leaves
-//   3. Build a CSR carrying the public key
-//   4. POST to <app-url>/api/v1/enroll with {token, csr_pem}
-//   5. Persist the returned device cert + CA cert + private key
-//      alongside ~/.agentry/agentry.json
+//  1. Take token + app URL (from flags or interactive prompt)
+//  2. Generate ECDSA keypair locally — private key never leaves
+//  3. Build a CSR carrying the public key
+//  4. POST to <app-url>/api/v1/enroll with {token, csr_pem}
+//  5. Persist the returned device cert + CA cert + private key
+//     alongside ~/.agentry/agentry.json
 //
 // The token came from the dashboard's "Add this machine" panel and
 // is single-use, 1-hour TTL. The cert it issues is 1y; auto-renewal

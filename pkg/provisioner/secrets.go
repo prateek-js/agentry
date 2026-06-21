@@ -40,13 +40,13 @@ type SecretListResponse struct {
 // look like real secrets — those have to go through `agentry env set`
 // on the user's terminal where the value never enters chat context.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`^sk-[A-Za-z0-9_-]{20,}$`),           // OpenAI-style
-	regexp.MustCompile(`^sk-ant-[A-Za-z0-9_-]{20,}$`),       // Anthropic-style
-	regexp.MustCompile(`^xoxb-[A-Za-z0-9-]{20,}$`),          // Slack bot
-	regexp.MustCompile(`^xoxp-[A-Za-z0-9-]{20,}$`),          // Slack user
-	regexp.MustCompile(`^ghp_[A-Za-z0-9]{30,}$`),            // GitHub PAT (classic)
-	regexp.MustCompile(`^github_pat_[A-Za-z0-9_]{50,}$`),    // GitHub PAT (fine-grained)
-	regexp.MustCompile(`^AKIA[0-9A-Z]{16}$`),                // AWS Access Key
+	regexp.MustCompile(`^sk-[A-Za-z0-9_-]{20,}$`),                                      // OpenAI-style
+	regexp.MustCompile(`^sk-ant-[A-Za-z0-9_-]{20,}$`),                                  // Anthropic-style
+	regexp.MustCompile(`^xoxb-[A-Za-z0-9-]{20,}$`),                                     // Slack bot
+	regexp.MustCompile(`^xoxp-[A-Za-z0-9-]{20,}$`),                                     // Slack user
+	regexp.MustCompile(`^ghp_[A-Za-z0-9]{30,}$`),                                       // GitHub PAT (classic)
+	regexp.MustCompile(`^github_pat_[A-Za-z0-9_]{50,}$`),                               // GitHub PAT (fine-grained)
+	regexp.MustCompile(`^AKIA[0-9A-Z]{16}$`),                                           // AWS Access Key
 	regexp.MustCompile(`^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$`), // JWT
 }
 
@@ -172,4 +172,3 @@ func envNameOK(name string) bool {
 	}
 	return true
 }
-

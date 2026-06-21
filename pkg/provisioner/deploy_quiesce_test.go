@@ -59,7 +59,9 @@ func (f *fakeRuntime) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
 	case "/v1/project/stop":
-		var body struct{ Name string `json:"name"` }
+		var body struct {
+			Name string `json:"name"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.projects[body.Name] = "stopped"
@@ -67,7 +69,9 @@ func (f *fakeRuntime) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	case "/v1/project/start":
-		var body struct{ Name string `json:"name"` }
+		var body struct {
+			Name string `json:"name"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.projects[body.Name] = "running"
@@ -113,11 +117,11 @@ func newQuiesceTestProvisioner(t *testing.T) (*Provisioner, *fakeRuntime, string
 	return p, rt, sandboxID
 }
 
-// 1. The dev server matching the build's project name gets paused.
-//    Unrelated projects (e.g. a sidecar API server) are left alone.
+//  1. The dev server matching the build's project name gets paused.
+//     Unrelated projects (e.g. a sidecar API server) are left alone.
 func TestPauseProjectsAt_MatchesByBasename(t *testing.T) {
 	p, rt, sid := newQuiesceTestProvisioner(t)
-	rt.seed("app", "running")   // the dev server we WANT to pause
+	rt.seed("app", "running")    // the dev server we WANT to pause
 	rt.seed("worker", "running") // unrelated background worker
 
 	paused := p.pauseProjectsAt(context.Background(), sid, "/workspace/projects/app")
@@ -138,9 +142,9 @@ func TestPauseProjectsAt_MatchesByBasename(t *testing.T) {
 	}
 }
 
-// 2. Already-stopped projects aren't stopped again. The race is only
-//    against running processes; stopped projects can't be writing to
-//    .next/, so we don't return them in the resume list.
+//  2. Already-stopped projects aren't stopped again. The race is only
+//     against running processes; stopped projects can't be writing to
+//     .next/, so we don't return them in the resume list.
 func TestPauseProjectsAt_SkipsAlreadyStopped(t *testing.T) {
 	p, rt, sid := newQuiesceTestProvisioner(t)
 	rt.seed("app", "stopped")
@@ -157,10 +161,10 @@ func TestPauseProjectsAt_SkipsAlreadyStopped(t *testing.T) {
 	}
 }
 
-// 3. Workspace-root build (single-project, projectPath == /workspace)
-//    falls back to pausing every running project. This is rare today
-//    but the fallback is what keeps us safe when the name convention
-//    doesn't apply.
+//  3. Workspace-root build (single-project, projectPath == /workspace)
+//     falls back to pausing every running project. This is rare today
+//     but the fallback is what keeps us safe when the name convention
+//     doesn't apply.
 func TestPauseProjectsAt_WorkspaceRoot(t *testing.T) {
 	p, rt, sid := newQuiesceTestProvisioner(t)
 	rt.seed("app", "running")
@@ -173,8 +177,8 @@ func TestPauseProjectsAt_WorkspaceRoot(t *testing.T) {
 	}
 }
 
-// 4. resumeProjects calls /v1/project/start for each name in the list
-//    and ignores empty input cheaply.
+//  4. resumeProjects calls /v1/project/start for each name in the list
+//     and ignores empty input cheaply.
 func TestResumeProjects_StartsEach(t *testing.T) {
 	p, rt, sid := newQuiesceTestProvisioner(t)
 	rt.seed("app", "stopped")
@@ -192,9 +196,9 @@ func TestResumeProjects_StartsEach(t *testing.T) {
 	}
 }
 
-// 5. Empty resume list short-circuits without touching the runtime —
-//    the common case (no projects to pause, nothing to bring back) must
-//    not waste an HTTP call.
+//  5. Empty resume list short-circuits without touching the runtime —
+//     the common case (no projects to pause, nothing to bring back) must
+//     not waste an HTTP call.
 func TestResumeProjects_EmptyIsNoop(t *testing.T) {
 	p, rt, sid := newQuiesceTestProvisioner(t)
 	p.resumeProjects(sid, nil)

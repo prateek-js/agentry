@@ -196,9 +196,9 @@ func TestStripIdentityHeaders(t *testing.T) {
 
 func TestIsXHR(t *testing.T) {
 	cases := []struct {
-		name    string
-		setup   func(r *http.Request)
-		isXHR   bool
+		name  string
+		setup func(r *http.Request)
+		isXHR bool
 	}{
 		{
 			name: "X-Requested-With",

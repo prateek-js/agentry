@@ -175,11 +175,11 @@ func isCertRejection(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	for _, m := range []string{
-		"bad certificate",            // remote error: tls: bad certificate
-		"unknown authority",          // x509: certificate signed by unknown authority
-		"certificate signed by",      // x509 variants
+		"bad certificate",       // remote error: tls: bad certificate
+		"unknown authority",     // x509: certificate signed by unknown authority
+		"certificate signed by", // x509 variants
 		"failed to verify certificate",
-		"certificate required",       // remote error: tls: certificate required
+		"certificate required", // remote error: tls: certificate required
 		"expired or is not yet valid",
 	} {
 		if strings.Contains(s, m) {

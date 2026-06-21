@@ -204,11 +204,11 @@ func (c *Childproc) Shutdown(ctx context.Context) {
 //
 // The flow:
 //
-//   1. Spawn child with shifted PORT.
-//   2. Build the listener (the rest of authproxy's normal handlers).
-//   3. Race child-exit vs signal vs listener-error.
-//   4. On any of those, shut the others down and propagate the
-//      first-seen exit cause.
+//  1. Spawn child with shifted PORT.
+//  2. Build the listener (the rest of authproxy's normal handlers).
+//  3. Race child-exit vs signal vs listener-error.
+//  4. On any of those, shut the others down and propagate the
+//     first-seen exit cause.
 func runExecMode(cfg *Config, listen func() error) int {
 	child, err := startChild(cfg)
 	if err != nil {

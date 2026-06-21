@@ -162,8 +162,8 @@ type FileFindData struct {
 // FileSearchData and FileGrepData both use FileGrepMatch so a single
 // shape covers single-file (search) and multi-file (grep) results.
 type FileSearchData struct {
-	File    string           `json:"file"`
-	Matches []FileGrepMatch  `json:"matches"`
+	File    string          `json:"file"`
+	Matches []FileGrepMatch `json:"matches"`
 	// LineNumbers retained for backward compatibility with existing
 	// callers that pulled the parallel arrays out of the response.
 	// Will be removed once internal callers migrate.
@@ -193,7 +193,7 @@ type FileReplaceData struct {
 }
 
 type FileMultiEditData struct {
-	File  string             `json:"file"`
+	File  string               `json:"file"`
 	Steps []FileEditStepResult `json:"steps"`
 }
 

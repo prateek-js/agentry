@@ -30,12 +30,12 @@ func TestHTTPStatusMapping(t *testing.T) {
 		code string
 		want int
 	}{
-		{SandboxInvalidRequest, http.StatusBadRequest},   // S001 → 400
-		{SandboxNotFound, http.StatusNotFound},           // S110 → 404
-		{SandboxAlreadyExists, http.StatusConflict},      // S210 → 409
+		{SandboxInvalidRequest, http.StatusBadRequest},          // S001 → 400
+		{SandboxNotFound, http.StatusNotFound},                  // S110 → 404
+		{SandboxAlreadyExists, http.StatusConflict},             // S210 → 409
 		{ProjectDependsUnresolved, http.StatusFailedDependency}, // P310 → 424
-		{BindingForbidden, http.StatusForbidden},         // B400 → 403
-		{Internal, http.StatusInternalServerError},       // Z900 → 500
+		{BindingForbidden, http.StatusForbidden},                // B400 → 403
+		{Internal, http.StatusInternalServerError},              // Z900 → 500
 	}
 	for _, c := range cases {
 		got := (&Error{Code: c.code}).HTTPStatus()

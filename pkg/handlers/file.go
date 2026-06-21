@@ -21,11 +21,11 @@ import (
 // node_modules tree across the tunnel by accident, but a real source
 // file still round-trips cleanly.
 const (
-	defaultReadMaxBytes    = 1 << 20 // 1 MiB
-	defaultListMaxResults  = 500
-	defaultGrepMaxResults  = 200
+	defaultReadMaxBytes     = 1 << 20 // 1 MiB
+	defaultListMaxResults   = 500
+	defaultGrepMaxResults   = 200
 	defaultGrepContextLines = 0
-	binaryDetectBytes      = 8 << 10 // 8 KiB
+	binaryDetectBytes       = 8 << 10 // 8 KiB
 )
 
 // FileReadHandler reads a file. Output is streamed line-by-line so a

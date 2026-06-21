@@ -78,7 +78,7 @@ type ClusterCertBundle struct {
 //   - cfg.EnrollURL   — control plane's /api/v1/enroll endpoint
 //   - cfg.EnrollToken — one-time enrollment token (single-use, ~1h TTL)
 //   - cfg.ClusterID   — cluster name; used for the CSR's placeholder
-//                       CN (the control plane overrides anyway)
+//     CN (the control plane overrides anyway)
 //
 // A missing field returns an error rather than silently doing the
 // wrong thing — operators want loud failures at boot.

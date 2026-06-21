@@ -16,10 +16,10 @@ import (
 // backend pointing at that runtime, then POSTs a binding for postgres
 // and asserts:
 //
-//   1. response carries the expected env var names
-//   2. the runtime received POSTs for every env var, each to the
-//      right path under /var/run/agentry/postgres/
-//   3. the values match what the caller supplied
+//  1. response carries the expected env var names
+//  2. the runtime received POSTs for every env var, each to the
+//     right path under /var/run/agentry/postgres/
+//  3. the values match what the caller supplied
 func TestBindingCreate_StubMintAndFileWrite(t *testing.T) {
 	type written struct {
 		File    string

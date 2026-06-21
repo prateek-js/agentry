@@ -48,11 +48,11 @@ func TestIsLoopbackHost(t *testing.T) {
 		want bool
 	}{
 		{"127.0.0.1", true},
-		{"127.0.0.2", true},   // anywhere in 127.0.0.0/8
+		{"127.0.0.2", true}, // anywhere in 127.0.0.0/8
 		{"::1", true},
-		{"0.0.0.0", false},    // wildcard = reachable externally
-		{"::", false},         // ipv6 wildcard
-		{"10.0.0.5", false},   // private interface
+		{"0.0.0.0", false},     // wildcard = reachable externally
+		{"::", false},          // ipv6 wildcard
+		{"10.0.0.5", false},    // private interface
 		{"203.0.113.5", false}, // public ip
 		{"", false},
 		{"not-an-ip", false},

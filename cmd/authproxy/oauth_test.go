@@ -121,7 +121,7 @@ func TestProviderDisplayName(t *testing.T) {
 
 func TestCoerceString(t *testing.T) {
 	cases := map[any]string{
-		"hello":   "hello",
+		"hello":     "hello",
 		float64(42): "42",
 		int(42):     "42",
 		int64(42):   "42",
