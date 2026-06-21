@@ -95,16 +95,16 @@ func TestRepairConnectionURL_LeavesUnknownShapesAlone(t *testing.T) {
 
 func TestLooksLikeDBURL(t *testing.T) {
 	cases := map[string]bool{
-		"postgresql://x":       true,
-		"postgres://x":         true,
-		"mysql://x":            true,
-		"mariadb://x":          true,
-		"mongodb://x":          true,
-		"mongodb+srv://x":      true,
-		"sk-abcdef":            false, // OpenAI key
-		"AKIA12345":            false, // AWS key
-		"https://api.host":     false,
-		"":                     false,
+		"postgresql://x":   true,
+		"postgres://x":     true,
+		"mysql://x":        true,
+		"mariadb://x":      true,
+		"mongodb://x":      true,
+		"mongodb+srv://x":  true,
+		"sk-abcdef":        false, // OpenAI key
+		"AKIA12345":        false, // AWS key
+		"https://api.host": false,
+		"":                 false,
 	}
 	for v, want := range cases {
 		if got := looksLikeDBURL(v); got != want {

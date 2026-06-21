@@ -422,4 +422,3 @@ func validateBindingEnv(entry *CatalogEntry, env map[string]string) error {
 	}
 	return nil
 }
-

@@ -49,9 +49,9 @@ func TestIsClerkCookieName(t *testing.T) {
 	}
 	notClerk := []string{
 		"agentry_csrf", "agentry_session", "ga", "session",
-		"_client_uat",         // single underscore — not Clerk
-		"__Session",           // wrong case
-		"client_uat",          // missing prefix
+		"_client_uat", // single underscore — not Clerk
+		"__Session",   // wrong case
+		"client_uat",  // missing prefix
 		"",
 	}
 	for _, n := range clerk {

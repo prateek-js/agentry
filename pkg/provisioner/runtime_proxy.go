@@ -127,7 +127,7 @@ func (p *Provisioner) handleSandboxConnect(w http.ResponseWriter, r *http.Reques
 		http.Error(w, fmt.Sprintf("sandbox %q not found", sandboxID), http.StatusNotFound)
 		return
 	}
-	runtimeAddr := fmt.Sprintf("%s:%d", p.config.NodeHost, runtimePort)
+	runtimeAddr := net.JoinHostPort(p.config.NodeHost, strconv.Itoa(int(runtimePort)))
 
 	dial := func() (io.ReadWriteCloser, error) {
 		c, err := net.DialTimeout("tcp", runtimeAddr, 5*time.Second)

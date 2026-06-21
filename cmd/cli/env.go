@@ -21,7 +21,7 @@ import (
 // cmdEnv dispatches the `agentry env *` subcommands. Two scopes:
 //
 //   - cluster default (no --sandbox): saved on the laptop under
-//     ~/.ad-sandbox/envs/<cluster>/<NAME>.json; the stdio post-create
+//     ~/.agentry/envs/<cluster>/<NAME>.json; the stdio post-create
 //     hook replays it onto every new sandbox in that cluster. Run-once,
 //     applies to all future sandboxes — what you want for things like
 //     JIRA_TOKEN that belong on every sandbox you spin up.

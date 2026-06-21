@@ -23,9 +23,9 @@ import (
 //     the runtime itself doesn't reverse-proxy anything.
 //   - Three supervision tiers; pick the LOWEST that fits, but reach for
 //     `project_start` for any server you'll touch more than once:
-//       command_run    — blocking one-shot (installs, tests, git, curl)
-//       command_start  — background, NO supervision — throwaway watchers only
-//       project_start  — supervised: auto-restart, health, depends_on, port discovery
+//     command_run    — blocking one-shot (installs, tests, git, curl)
+//     command_start  — background, NO supervision — throwaway watchers only
+//     project_start  — supervised: auto-restart, health, depends_on, port discovery
 //     For multi-service apps (backend + frontend) call `project_start_all`
 //     — `depends_on` on each project handles ordering. Manifest format and
 //     worked examples in /etc/sandbox/docs/projects.md.
@@ -359,9 +359,9 @@ type fileReplaceArgs struct {
 }
 
 type fileMultiEditArgs struct {
-	SandboxURL string             `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
-	File       string             `json:"file" jsonschema:"absolute file path"`
-	Edits      []fileMultiEditOp  `json:"edits" jsonschema:"ordered list of edits to apply. Each step operates on the result of the previous; the file is written only if every step succeeds."`
+	SandboxURL string            `json:"sandbox_url,omitempty" jsonschema:"http(s) URL of the sandbox runtime. OPTIONAL — defaults to the URL of the most recent sandbox_create in this MCP session. Pass explicitly only when juggling multiple sandboxes."`
+	File       string            `json:"file" jsonschema:"absolute file path"`
+	Edits      []fileMultiEditOp `json:"edits" jsonschema:"ordered list of edits to apply. Each step operates on the result of the previous; the file is written only if every step succeeds."`
 }
 
 type fileMultiEditOp struct {
@@ -531,7 +531,6 @@ func sandboxList(c *Client) mcp.ToolHandlerFor[sandboxListArgs, any] {
 		return jsonResult(out), out, nil
 	}
 }
-
 
 func buildImage(c *Client) mcp.ToolHandlerFor[sandboxIDOnlyArgs, BuildResponse] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, a sandboxIDOnlyArgs) (*mcp.CallToolResult, BuildResponse, error) {

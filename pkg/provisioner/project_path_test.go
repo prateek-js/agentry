@@ -101,7 +101,7 @@ func TestProjectPathAndSlug_RejectsShellMetacharacters(t *testing.T) {
 		"app'sq",
 		"app\"dq",
 		"app\\bs",
-		"app new",                  // space
+		"app new", // space
 		"app\nnewline",
 		"app\tinjection",
 	}

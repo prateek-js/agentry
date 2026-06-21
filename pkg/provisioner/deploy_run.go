@@ -62,10 +62,10 @@ type DeploymentRegistryAuth struct {
 
 // DeploymentRunResponse echoes the running container.
 type DeploymentRunResponse struct {
-	ID          string `json:"id"`
-	Container   string `json:"container"`
-	Port        int    `json:"port"`
-	Status      string `json:"status"`
+	ID        string `json:"id"`
+	Container string `json:"container"`
+	Port      int    `json:"port"`
+	Status    string `json:"status"`
 }
 
 // DeploymentInfo is returned by GET /api/deployments/{id}.

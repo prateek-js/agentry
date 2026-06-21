@@ -64,21 +64,21 @@ const (
 
 // Skills — catalog, load, versioning.
 const (
-	SkillInvalidRequest    = "K001"
-	SkillNotInCatalog      = "K110"
-	SkillVersionUnknown    = "K120"
-	SkillFetchFailed       = "K300"
-	SkillInternal          = "K900"
+	SkillInvalidRequest = "K001"
+	SkillNotInCatalog   = "K110"
+	SkillVersionUnknown = "K120"
+	SkillFetchFailed    = "K300"
+	SkillInternal       = "K900"
 )
 
 // Projects — managed project manifests + lifecycle.
 const (
-	ProjectInvalidManifest  = "P001"
-	ProjectNotFound         = "P110"
-	ProjectAlreadyRunning   = "P210"
-	ProjectStartFailed      = "P300"
+	ProjectInvalidManifest   = "P001"
+	ProjectNotFound          = "P110"
+	ProjectAlreadyRunning    = "P210"
+	ProjectStartFailed       = "P300"
 	ProjectDependsUnresolved = "P310"
-	ProjectInternal         = "P900"
+	ProjectInternal          = "P900"
 )
 
 // Runtime ops — shell / file / code-exec failures.

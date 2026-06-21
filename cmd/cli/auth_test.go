@@ -148,9 +148,9 @@ func TestLooksLikeHex(t *testing.T) {
 	}{
 		{"deadbeef", 4, true},
 		{"DEADBEEF", 4, true},
-		{"deadbeef", 5, false}, // too short
+		{"deadbeef", 5, false},   // too short
 		{"deadbeefxy", 4, false}, // non-hex chars
-		{"deadbee", 3, false},  // odd length
+		{"deadbee", 3, false},    // odd length
 		{"", 0, false},
 	}
 	for _, c := range cases {
@@ -418,12 +418,12 @@ func TestFitnessMongo_UnreachableHostFails(t *testing.T) {
 
 func TestDatabaseFromMongoURI(t *testing.T) {
 	cases := map[string]string{
-		"mongodb://h:27017":              "agentry",
-		"mongodb://h:27017/":             "agentry",
-		"mongodb://h:27017/myapp":        "myapp",
-		"mongodb://h:27017/myapp?w=1":    "myapp",
-		"mongodb+srv://h/auth?retry=1":   "auth",
-		"bogus":                          "agentry",
+		"mongodb://h:27017":            "agentry",
+		"mongodb://h:27017/":           "agentry",
+		"mongodb://h:27017/myapp":      "myapp",
+		"mongodb://h:27017/myapp?w=1":  "myapp",
+		"mongodb+srv://h/auth?retry=1": "auth",
+		"bogus":                        "agentry",
 	}
 	for in, want := range cases {
 		if got := databaseFromMongoURI(in); got != want {
@@ -578,4 +578,3 @@ func TestAuthProviderListTo_TableShape(t *testing.T) {
 		t.Errorf("provider list leaked the literal key client_secret")
 	}
 }
-

@@ -57,8 +57,8 @@ const (
 // names are kept short on purpose: the cookie ships on every request,
 // so every byte matters.
 type SessionPayload struct {
-	UID      string `json:"u"`           // stable user id (UUID hex)
-	Email    string `json:"e"`           // current email — we copy here so we
+	UID   string `json:"u"` // stable user id (UUID hex)
+	Email string `json:"e"` // current email — we copy here so we
 	//                                     don't have to read the DB on every
 	//                                     header-injection call. Mutating the
 	//                                     DB row means the new value lands at
@@ -72,10 +72,10 @@ type SessionPayload struct {
 // switch on. Each maps to a specific UX: malformed → 400, tampered →
 // 401 + force fresh login, expired → 302 to login page.
 var (
-	errSessionExpired  = errors.New("session expired")
-	errSessionTampered = errors.New("session signature invalid")
+	errSessionExpired   = errors.New("session expired")
+	errSessionTampered  = errors.New("session signature invalid")
 	errSessionMalformed = errors.New("session payload malformed")
-	errSessionMissing  = errors.New("no session cookie")
+	errSessionMissing   = errors.New("no session cookie")
 )
 
 // sealSession marshals + signs a payload into the wire format:

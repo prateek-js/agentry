@@ -1,0 +1,24 @@
+# golangci-lint configuration. Conservative starter set — the standard
+# vet/staticcheck family plus a few hygiene linters, so CI is useful
+# without drowning contributors in style nits on day one.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+
+issues:
+  exclude-rules:
+    # Test files often ignore errors deliberately for brevity.
+    - path: _test\.go
+      linters:
+        - errcheck
+  max-issues-per-linter: 0
+  max-same-issues: 0

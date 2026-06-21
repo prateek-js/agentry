@@ -223,11 +223,11 @@ func TestNewUserID(t *testing.T) {
 
 func TestIsUniqueViolation(t *testing.T) {
 	cases := map[string]bool{
-		"":                                  false,
-		"connection refused":                false,
-		"ERROR: duplicate key value":        true,
-		"UNIQUE constraint failed: x":       true,
-		"Error 1062: Duplicate entry":       true,
+		"":                            false,
+		"connection refused":          false,
+		"ERROR: duplicate key value":  true,
+		"UNIQUE constraint failed: x": true,
+		"Error 1062: Duplicate entry": true,
 		"duplicate key value violates unique constraint": true,
 	}
 	for msg, want := range cases {

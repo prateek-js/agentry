@@ -23,21 +23,21 @@ import (
 //
 // Kind picks how the upstream URL is built:
 //
-//   "share"      → sandbox port. Goes through the runtime app_proxy
-//                  (/api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>).
-//                  Live dev process; sandbox-bound.
-//   "deployment" → deployment container. Goes through the deployment
-//                  proxy (/api/deployments/<dep_id>/proxy/<rest>).
-//                  Prod image; survives sandbox deletion.
+//	"share"      → sandbox port. Goes through the runtime app_proxy
+//	               (/api/sandboxes/<sid>/runtime/v1/proxy/<port>/<rest>).
+//	               Live dev process; sandbox-bound.
+//	"deployment" → deployment container. Goes through the deployment
+//	               proxy (/api/deployments/<dep_id>/proxy/<rest>).
+//	               Prod image; survives sandbox deletion.
 //
 // SandboxID + Port populate when Kind=share. DeploymentID populates
 // when Kind=deployment. ClusterID + OrgID + AuthMode apply to both.
 type DeployRoute struct {
-	Hostname  string `json:"hostname"`           // e.g. "sales-dash-abc.agentry.live"
-	Kind      string `json:"kind"`               // "share" | "deployment" (default: "share" for legacy rows)
-	ClusterID string `json:"cluster_id"`         // matches the cluster-id used at handshake (== cluster name)
-	OrgID     string `json:"org_id"`             // Clerk org gate
-	AuthMode  string `json:"auth_mode"`          // "public" | "org" | "password"
+	Hostname  string `json:"hostname"`   // e.g. "sales-dash-abc.agentry.live"
+	Kind      string `json:"kind"`       // "share" | "deployment" (default: "share" for legacy rows)
+	ClusterID string `json:"cluster_id"` // matches the cluster-id used at handshake (== cluster name)
+	OrgID     string `json:"org_id"`     // Clerk org gate
+	AuthMode  string `json:"auth_mode"`  // "public" | "org" | "password"
 
 	// Kind=share fields.
 	SandboxID string `json:"sandbox_id,omitempty"`

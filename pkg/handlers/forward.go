@@ -71,4 +71,3 @@ func ForwardConnectHandler(w http.ResponseWriter, r *http.Request) {
 	defer upstream.Close()
 	_ = tunnel.CopyStreams(r.Context(), inbound, upstream, tunnel.CopyOptions{})
 }
-

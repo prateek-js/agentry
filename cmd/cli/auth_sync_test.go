@@ -108,16 +108,16 @@ func TestAuthEnvForStateKeysSorted(t *testing.T) {
 
 func TestSandboxIsLiveStatuses(t *testing.T) {
 	cases := map[string]bool{
-		"running":    true,
-		"starting":   true,
-		"ready":      true,
-		"":           true, // empty status — bridge hasn't synced; assume live
-		"unknown":    true, // novel — push and let the runtime decide
-		"stopped":    false,
-		"stopping":   false,
-		"failed":     false,
-		"errored":    false,
-		"deleted":    false,
+		"running":  true,
+		"starting": true,
+		"ready":    true,
+		"":         true, // empty status — bridge hasn't synced; assume live
+		"unknown":  true, // novel — push and let the runtime decide
+		"stopped":  false,
+		"stopping": false,
+		"failed":   false,
+		"errored":  false,
+		"deleted":  false,
 	}
 	for status, want := range cases {
 		got := sandboxIsLive(sandboxInfo{Status: status})

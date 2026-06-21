@@ -20,13 +20,13 @@ import (
 // directory, restart the provisioner, the service is available. No
 // code changes required — that's the convention promise.
 type ServiceManifest struct {
-	Name        string             `yaml:"name" json:"name"`
-	DisplayName string             `yaml:"display_name" json:"display_name"`
-	Category    string             `yaml:"category" json:"category"`
-	Description string             `yaml:"description" json:"description"`
-	Fields      []ServiceField     `yaml:"fields" json:"fields"`
-	Inject      ServiceInject      `yaml:"inject" json:"inject"`
-	GetStarted  string             `yaml:"get_started,omitempty" json:"get_started,omitempty"`
+	Name        string         `yaml:"name" json:"name"`
+	DisplayName string         `yaml:"display_name" json:"display_name"`
+	Category    string         `yaml:"category" json:"category"`
+	Description string         `yaml:"description" json:"description"`
+	Fields      []ServiceField `yaml:"fields" json:"fields"`
+	Inject      ServiceInject  `yaml:"inject" json:"inject"`
+	GetStarted  string         `yaml:"get_started,omitempty" json:"get_started,omitempty"`
 
 	// Capabilities are coarse feature tags a binding unlocks downstream —
 	// e.g. smtp → ["email"]. The authproxy lights up password reset +
@@ -39,14 +39,14 @@ type ServiceManifest struct {
 // ServiceField describes one input the user must supply when binding
 // the service. Drives both CLI prompts and dashboard forms.
 type ServiceField struct {
-	Name          string `yaml:"name" json:"name"`
-	Label         string `yaml:"label" json:"label"`
-	Placeholder   string `yaml:"placeholder,omitempty" json:"placeholder,omitempty"`
-	Default       string `yaml:"default,omitempty" json:"default,omitempty"`
-	Secret        bool   `yaml:"secret,omitempty" json:"secret,omitempty"`
-	Required      bool   `yaml:"required,omitempty" json:"required,omitempty"`
-	ProdRequired  bool   `yaml:"prod_required,omitempty" json:"prod_required,omitempty"`
-	Pattern       string `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+	Name         string `yaml:"name" json:"name"`
+	Label        string `yaml:"label" json:"label"`
+	Placeholder  string `yaml:"placeholder,omitempty" json:"placeholder,omitempty"`
+	Default      string `yaml:"default,omitempty" json:"default,omitempty"`
+	Secret       bool   `yaml:"secret,omitempty" json:"secret,omitempty"`
+	Required     bool   `yaml:"required,omitempty" json:"required,omitempty"`
+	ProdRequired bool   `yaml:"prod_required,omitempty" json:"prod_required,omitempty"`
+	Pattern      string `yaml:"pattern,omitempty" json:"pattern,omitempty"`
 }
 
 // ServiceInject is what gets stamped into the sandbox when the

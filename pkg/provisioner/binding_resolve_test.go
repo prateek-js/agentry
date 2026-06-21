@@ -148,4 +148,3 @@ func TestBindingResolve_IncludesSandboxSecrets(t *testing.T) {
 		}
 	}
 }
-

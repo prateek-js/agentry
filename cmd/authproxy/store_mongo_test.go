@@ -4,12 +4,12 @@ import "testing"
 
 func TestDatabaseFromURIDefaults(t *testing.T) {
 	cases := map[string]string{
-		"mongodb://h:27017":                  mongoDefaultDB,
-		"mongodb://h:27017/":                 mongoDefaultDB,
-		"mongodb://h:27017/myapp":            "myapp",
-		"mongodb://h:27017/myapp?retry=1":    "myapp",
-		"mongodb+srv://cluster/auth":         "auth",
-		"":                                   mongoDefaultDB,
+		"mongodb://h:27017":               mongoDefaultDB,
+		"mongodb://h:27017/":              mongoDefaultDB,
+		"mongodb://h:27017/myapp":         "myapp",
+		"mongodb://h:27017/myapp?retry=1": "myapp",
+		"mongodb+srv://cluster/auth":      "auth",
+		"":                                mongoDefaultDB,
 	}
 	for in, want := range cases {
 		if got := databaseFromURI(in); got != want {

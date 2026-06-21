@@ -254,4 +254,3 @@ func newFakeServer(t *testing.T, h http.HandlerFunc) *fakeServer {
 func newLocalListener() (net.Listener, error) {
 	return net.Listen("tcp", "127.0.0.1:0")
 }
-

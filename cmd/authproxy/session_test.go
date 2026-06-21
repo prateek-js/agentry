@@ -114,7 +114,7 @@ func TestSetSessionCookieOverridesExpiry(t *testing.T) {
 
 	// Caller passes a wildly future Exp; setSessionCookie should
 	// override it to ~30 days from now.
-	if err := setSessionCookie(w, r, SessionPayload{UID: "u", Exp: 1<<62}, secret); err != nil {
+	if err := setSessionCookie(w, r, SessionPayload{UID: "u", Exp: 1 << 62}, secret); err != nil {
 		t.Fatal(err)
 	}
 	resp := w.Result()

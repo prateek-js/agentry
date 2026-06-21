@@ -37,9 +37,9 @@ import (
 
 // gcImageCandidate is one reclaimable image in the candidate list.
 type gcImageCandidate struct {
-	ID        string   `json:"id"`         // full sha256:... id (what POST /api/gc expects)
-	ShortID   string   `json:"short_id"`   // trimmed for display
-	Tags      []string `json:"tags"`       // usually ["<none>:<none>"] for dangling
+	ID        string   `json:"id"`       // full sha256:... id (what POST /api/gc expects)
+	ShortID   string   `json:"short_id"` // trimmed for display
+	Tags      []string `json:"tags"`     // usually ["<none>:<none>"] for dangling
 	SizeBytes int64    `json:"size_bytes"`
 	Created   int64    `json:"created"` // unix seconds
 }
