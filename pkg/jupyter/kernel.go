@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agentry/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/shell"
 	"github.com/go-zeromq/zmq4"
 )
 

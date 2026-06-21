@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // BrokerClient is the cluster-side agent that phones home to an

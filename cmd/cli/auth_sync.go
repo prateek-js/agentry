@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // auth_sync.go — push current auth state to already-running sandboxes.

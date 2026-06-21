@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 // TestIsProtectedReadPath nails down the path-classification rules so

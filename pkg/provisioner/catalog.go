@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agentry/agentry/pkg/errcode"
+	"github.com/agentry-ai/agentry/pkg/errcode"
 )
 
 // CatalogEntry is the shared shape every catalog item has. Today

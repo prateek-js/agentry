@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 // SandboxHandler returns sandbox context info.

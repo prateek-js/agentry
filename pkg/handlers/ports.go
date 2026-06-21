@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 // PortsListHandler lists ports with listening processes and splits

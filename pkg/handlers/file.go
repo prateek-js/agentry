@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 	"github.com/bmatcuk/doublestar/v4"
 )
 

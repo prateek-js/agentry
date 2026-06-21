@@ -14,8 +14,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/agentry/agentry/pkg/runtime"
-	"github.com/agentry/agentry/pkg/telemetry"
+	"github.com/agentry-ai/agentry/pkg/runtime"
+	"github.com/agentry-ai/agentry/pkg/telemetry"
 )
 
 const runtimeVersion = "1.0.0"

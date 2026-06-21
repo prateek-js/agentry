@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 var startTime = time.Now()

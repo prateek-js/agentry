@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // ForwardConnectHandler is the terminal hop of the data-plane

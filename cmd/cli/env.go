@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 	"github.com/hashicorp/yamux"
 	"golang.org/x/term"
 )

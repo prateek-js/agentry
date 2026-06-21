@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/agentry/agentry/pkg/models"
-	"github.com/agentry/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/shell"
 )
 
 // ShellHandler creates a handler for shell command execution.

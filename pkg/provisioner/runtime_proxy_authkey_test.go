@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/auth"
 )
 
 // fakeRuntime stands in for a sandbox runtime: it records the

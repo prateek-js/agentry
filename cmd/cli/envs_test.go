@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/mcp"
+	"github.com/agentry-ai/agentry/pkg/mcp"
 )
 
 // Tests for cluster-default env vars (`agentry env set NAME`,

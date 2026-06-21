@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentry/agentry/pkg/errcode"
+	"github.com/agentry-ai/agentry/pkg/errcode"
 )
 
 // BindingRequest is the body for POST /api/sandboxes/{id}/bindings.

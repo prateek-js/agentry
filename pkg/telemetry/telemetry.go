@@ -152,7 +152,7 @@ func Init(ctx context.Context, cfg Config) (Shutdown, error) {
 	)
 	otel.SetMeterProvider(provider)
 
-	meter := provider.Meter("github.com/agentry/agentry")
+	meter := provider.Meter("github.com/agentry-ai/agentry")
 	reqs, err := meter.Int64Counter("http.server.requests",
 		metric.WithDescription("Total HTTP requests served"),
 	)

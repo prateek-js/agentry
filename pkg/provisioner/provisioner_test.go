@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/auth"
 )
 
 func newTestProvisioner(t *testing.T, key string) (*httptest.Server, *MockBackend) {

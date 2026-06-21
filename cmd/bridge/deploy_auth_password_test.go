@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/agentry/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/bridge"
 )
 
 // makeArgon2Hash mirrors agentry-app's passhash.Hash output shape

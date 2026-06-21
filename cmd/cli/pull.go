@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // defaultPullExcludes are the GNU-tar --exclude patterns we send by

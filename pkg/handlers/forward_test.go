@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // runtimeServer stands up an httptest server whose handler diverts

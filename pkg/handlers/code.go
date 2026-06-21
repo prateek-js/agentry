@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/jupyter"
+	"github.com/agentry-ai/agentry/pkg/jupyter"
 )
 
 // CreateContextRequest is the body for POST /v1/code/contexts.

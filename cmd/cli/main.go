@@ -30,9 +30,9 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/agentry/agentry/pkg/bridge"
-	"github.com/agentry/agentry/pkg/mcp"
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/mcp"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // tabWriter is the shared tab-aligned writer used by every `ls` /
