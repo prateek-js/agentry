@@ -141,11 +141,9 @@ Everything above runs without it. The hosted control plane
 - **Deployments through the hosted ingress** (`*.agentry.live` URLs, custom
   domains). The build path runs locally; the managed public URL does not.
 
-For a self-hosted mTLS setup without the hosted service, run your own bridge
-with your own CA: generate a CA (`openssl`), point the bridge at it via
-`CA_CERT_PATH`, and issue client certs for the CLI and provisioner from that
-CA. (A turnkey self-host enrollment path isn't shipped yet — contributions
-welcome.)
+To get the hosted experience — remote access over a tunnel, public deploy
+URLs — on your own hardware, see **[SELF-HOSTING.md](SELF-HOSTING.md)**,
+which lists exactly which pieces to bring for each part.
 
 ## Troubleshooting
 

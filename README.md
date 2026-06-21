@@ -23,21 +23,25 @@ commands, start dev servers, and deploy.
 
 ## Open source vs. hosted
 
-This repo is the **engine**, and it runs standalone — you can build and run
-the whole thing locally with nothing but Go and Docker (see
-[Run it locally](#run-it-locally)).
+**This repo is the whole engine.** Sandboxes, the runtime API, building and
+running apps — all of it is here and runs standalone with nothing but Go and
+Docker (see [Run it locally](#run-it-locally)).
 
-A separate, **closed-source control plane** (the hosted service at
-`app.agentry.run`) adds the multi-tenant web dashboard, accounts, device
-enrollment + certificate issuance, and the managed `bridge` — i.e. the
-turnkey "paste one command on any machine and drive it from the web" SaaS.
-The OSS engine does not require it.
+The hosted service at `app.agentry.run` is **convenience, not capability.**
+It's a closed-source control plane that runs the multi-tenant pieces for you
+— a web dashboard + accounts, automatic device enrollment + certificate
+issuance, the managed tunnel, and deploy ingress — so you don't have to
+stand any of that up. It adds nothing to what a sandbox can *do*.
 
-| This repo (`agentry`, OSS) | Hosted (`app.agentry.run`, closed) |
+| This repo (`agentry`, OSS) — the engine | Hosted (`app.agentry.run`, closed) — convenience |
 |---|---|
 | CLI, runtime, provisioner, bridge, authproxy | Web dashboard, accounts, billing |
-| Sandbox lifecycle + the full runtime API | Device enrollment + CA / cert issuance |
-| Self-host locally with Go + Docker | Managed multi-tenant tunnel + routing |
+| Full sandbox lifecycle + runtime API | One-paste onboarding |
+| Build + run apps | Automatic enrollment + CA / cert issuance |
+| Run the bridge yourself | Managed multi-tenant tunnel + deploy ingress |
+
+Want the hosted experience on your own hardware? **[docs/SELF-HOSTING.md](docs/SELF-HOSTING.md)**
+lists exactly which pieces to bring to replicate each part.
 
 ## Components
 
@@ -95,6 +99,7 @@ Full walkthrough, env-var reference, and how to wire an AI client →
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the components fit, the data plane, ports, and the security model.
 - **[docs/RUNNING-LOCALLY.md](docs/RUNNING-LOCALLY.md)** — run the engine on your machine, end to end, with no third-party services.
+- **[docs/SELF-HOSTING.md](docs/SELF-HOSTING.md)** — what to bring to get the hosted experience (remote access, deploy URLs) on your own hardware.
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — build from source, the `make` targets, and the repo layout.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[SECURITY.md](SECURITY.md)**
 
