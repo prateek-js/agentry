@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentry/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/bridge"
 )
 
 // hmac256 returns SHA-256 HMAC of body under secret. Keeping it as a

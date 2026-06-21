@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentry/agentry/pkg/handlers"
+	"github.com/agentry-ai/agentry/pkg/handlers"
 	"github.com/gorilla/websocket"
 )
 

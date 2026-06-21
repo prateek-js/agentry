@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentry/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/shell"
 	"github.com/gorilla/websocket"
 )
 

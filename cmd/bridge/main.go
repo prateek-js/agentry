@@ -42,7 +42,7 @@ import (
 	sentryhttp "github.com/getsentry/sentry-go/http"
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/agentry/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/bridge"
 )
 
 func main() {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // DeployRoute is one hostname → target mapping. The bridge keeps a

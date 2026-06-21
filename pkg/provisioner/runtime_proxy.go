@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/auth"
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // runtimeProxyPrefix is the API path under which the provisioner

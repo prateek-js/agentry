@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/auth"
 )
 
 // newTestServer builds a runtime.Server wired with the given key and returns

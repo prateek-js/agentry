@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/auth"
 )
 
 // Sandbox-name collision behavior. The "ecommerce-store" incident:

@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agentry/agentry/pkg/auth"
-	"github.com/agentry/agentry/pkg/models"
-	"github.com/agentry/agentry/pkg/telemetry"
+	"github.com/agentry-ai/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/telemetry"
 )
 
 // cryptoRandRead is a seam so tests can stub crypto/rand if they

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentry/agentry/pkg/mcp"
+	"github.com/agentry-ai/agentry/pkg/mcp"
 )
 
 // Cluster-default service bindings live on the laptop, one JSON file

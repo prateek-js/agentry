@@ -26,7 +26,7 @@ func installManualReader(t *testing.T) (*sdkmetric.ManualReader, func()) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	otel.SetMeterProvider(provider)
 
-	meter := provider.Meter("github.com/agentry/agentry")
+	meter := provider.Meter("github.com/agentry-ai/agentry")
 	reqs, err := meter.Int64Counter("http.server.requests")
 	if err != nil {
 		t.Fatal(err)

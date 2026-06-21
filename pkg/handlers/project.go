@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agentry/agentry/pkg/models"
-	"github.com/agentry/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/shell"
 )
 
 const (

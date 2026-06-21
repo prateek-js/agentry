@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 // parseListenAddress exercises the four shapes ss/netstat write for

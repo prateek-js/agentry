@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/agentry/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/shell"
 )
 
 // BgStartRequest is the JSON body for POST /v1/shell/background.

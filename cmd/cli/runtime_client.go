@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 )

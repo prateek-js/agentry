@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/auth"
 	corev1 "k8s.io/api/core/v1"
 )
 

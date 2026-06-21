@@ -1,4 +1,4 @@
-module github.com/agentry/agentry
+module github.com/agentry-ai/agentry
 
 go 1.26.2
 

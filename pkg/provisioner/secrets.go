@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentry/agentry/pkg/errcode"
+	"github.com/agentry-ai/agentry/pkg/errcode"
 )
 
 // SecretRequest is the body for POST /api/sandboxes/{id}/secrets.

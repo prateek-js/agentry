@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agentry/agentry/pkg/auth"
-	"github.com/agentry/agentry/pkg/handlers"
-	"github.com/agentry/agentry/pkg/jupyter"
-	"github.com/agentry/agentry/pkg/shell"
-	"github.com/agentry/agentry/pkg/telemetry"
+	"github.com/agentry-ai/agentry/pkg/auth"
+	"github.com/agentry-ai/agentry/pkg/handlers"
+	"github.com/agentry-ai/agentry/pkg/jupyter"
+	"github.com/agentry-ai/agentry/pkg/shell"
+	"github.com/agentry-ai/agentry/pkg/telemetry"
 )
 
 // APIKeyEnv is the environment variable used to enable API-key auth.
@@ -253,7 +253,7 @@ func registerRoutes(mux *http.ServeMux, shellMgr *shell.Manager, bgMgr *shell.Ba
 		handlers.JSON(w, http.StatusOK, map[string]string{
 			"name":    "ad-sandbox",
 			"version": "1.0.0",
-			"docs":    "https://github.com/agentry/agentry",
+			"docs":    "https://github.com/agentry-ai/agentry",
 		})
 	})
 

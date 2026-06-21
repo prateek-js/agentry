@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/mcp"
+	"github.com/agentry-ai/agentry/pkg/mcp"
 )
 
 // Tests for the operator-side auth feature: on-disk state, secret

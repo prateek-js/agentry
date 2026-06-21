@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentry/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/bridge"
 )
 
 // decodeHexSecret parses the env-var-supplied HMAC key. We accept hex

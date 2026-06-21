@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentry/agentry/pkg/bridge"
-	"github.com/agentry/agentry/pkg/tunnel"
+	"github.com/agentry-ai/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/tunnel"
 )
 
 // TestProvisionerOverBrokerEndToEnd is the load-bearing test for the

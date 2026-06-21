@@ -1,10 +1,14 @@
-// ad-sandbox provisioner — manages sandbox Pods in Kubernetes.
+// Command provisioner manages sandbox lifecycle on a host.
+//
+// It creates/destroys sandboxes via a backend (Docker today) and
+// reverse-proxies to each sandbox's runtime. Listens on 127.0.0.1:8002
+// by default.
 //
 // Usage:
 //
-//	sandbox-provisioner                        # Listen on :8002
-//	SANDBOX_IMAGE=my-sandbox:v1 sandbox-provisioner
-//	K8S_NAMESPACE=sandboxes sandbox-provisioner
+//	provisioner                                # listen on 127.0.0.1:8002
+//	SANDBOX_IMAGE=my-runtime:v1 provisioner    # override the sandbox image
+//	PROVISIONER_ADDR=0.0.0.0:8002 provisioner  # override the listen address
 package main
 
 import (
@@ -14,8 +18,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/agentry/agentry/pkg/provisioner"
-	"github.com/agentry/agentry/pkg/telemetry"
+	"github.com/agentry-ai/agentry/pkg/provisioner"
+	"github.com/agentry-ai/agentry/pkg/telemetry"
 )
 
 // provisionerVersion is injected at build time via ldflags
@@ -37,7 +41,7 @@ func main() {
 	}
 
 	provisioner.Version = provisionerVersion
-	log.Printf("ad-sandbox provisioner starting (pid=%d version=%s)", os.Getpid(), provisionerVersion)
+	log.Printf("agentry provisioner starting (pid=%d version=%s)", os.Getpid(), provisionerVersion)
 
 	telCtx, telCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	shutdown, err := telemetry.Init(telCtx, telemetry.ConfigFromEnv("agentry-provisioner", provisionerVersion))
@@ -72,12 +76,12 @@ func main() {
 	if err := p.Run(); err != nil {
 		log.Fatalf("provisioner shutdown error: %v", err)
 	}
-	log.Println("ad-sandbox provisioner stopped")
+	log.Println("agentry provisioner stopped")
 }
 
 // newBackend constructs the sandbox backend the user selected via the
-// BACKEND env var. Defaults to Kubernetes; Docker is the canonical
-// single-host alternative.
+// BACKEND env var. Docker is the only supported backend today;
+// Kubernetes/Kata/gVisor are stubbed (see the switch below).
 func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 	switch cfg.Backend {
 	case provisioner.BackendDocker, "":

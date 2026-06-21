@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agentry/agentry/pkg/bridge"
+	"github.com/agentry-ai/agentry/pkg/bridge"
 )
 
 func reqWithCN(cn string) *http.Request {

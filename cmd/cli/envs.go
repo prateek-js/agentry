@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentry/agentry/pkg/mcp"
+	"github.com/agentry-ai/agentry/pkg/mcp"
 )
 
 // Cluster-default env vars (JIRA tokens, custom API keys, anything

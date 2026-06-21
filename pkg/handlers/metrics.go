@@ -8,7 +8,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/agentry/agentry/pkg/models"
+	"github.com/agentry-ai/agentry/pkg/models"
 )
 
 // MetricsHandler returns system metrics (CPU, memory, disk).
