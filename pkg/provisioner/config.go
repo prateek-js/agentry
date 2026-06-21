@@ -132,9 +132,14 @@ func DefaultConfig() Config {
 		defaultHost = "localhost"
 	}
 	return Config{
-		Backend:        backend,
-		Namespace:      envOr("K8S_NAMESPACE", "default"),
-		SandboxImage:   envOr("SANDBOX_IMAGE", "agentry/runtime:latest"),
+		Backend:   backend,
+		Namespace: envOr("K8S_NAMESPACE", "default"),
+		// Default to the published multi-arch runtime image so a bare
+		// `BACKEND=docker provisioner` pulls it and just works — no local
+		// build required. Developers iterating on the image build it under
+		// a local tag (`make runtime-image` → agentry/runtime:latest) and
+		// pass SANDBOX_IMAGE to use that instead.
+		SandboxImage:   envOr("SANDBOX_IMAGE", "ghcr.io/agentry-ai/runtime:latest"),
 		NodeHost:       envOr("NODE_HOST", defaultHost),
 		KubeconfigPath: envOr("KUBECONFIG_PATH", os.ExpandEnv("$HOME/.kube/config")),
 		// Loopback by default: the control API (create/delete sandbox,
