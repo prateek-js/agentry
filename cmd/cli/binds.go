@@ -17,7 +17,7 @@ import (
 )
 
 // Cluster-default service bindings live on the laptop, one JSON file
-// per service under ~/.ad-sandbox/services/<cluster>/<service>.json.
+// per service under ~/.agentry/services/<cluster>/<service>.json.
 //
 // When the LLM creates a new sandbox via `agentry stdio`, the post-create
 // hook walks this directory for the active cluster and POSTs each

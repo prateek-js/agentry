@@ -19,7 +19,7 @@ import (
 // Cluster-default env vars (JIRA tokens, custom API keys, anything
 // the user wants on every sandbox in the cluster). Lives on the
 // laptop, one JSON file per env var under
-// ~/.ad-sandbox/envs/<cluster>/<NAME>.json.
+// ~/.agentry/envs/<cluster>/<NAME>.json.
 //
 // Same trust model + persistence shape as binds.go's cluster-default
 // service bindings. The PostCreate hook replays each stored env on

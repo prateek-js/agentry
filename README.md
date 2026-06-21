@@ -1,5 +1,10 @@
 # agentry
 
+[![CI](https://github.com/agentry/agentry/actions/workflows/ci.yml/badge.svg)](https://github.com/agentry/agentry/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/agentry/agentry)](https://goreportcard.com/report/github.com/agentry/agentry)
+[![Go Reference](https://pkg.go.dev/badge/github.com/agentry/agentry.svg)](https://pkg.go.dev/github.com/agentry/agentry)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 **Self-hosted compute for AI agents.** Give an AI coding agent (Claude Code,
 Cursor, Roo, or anything that speaks [MCP](https://modelcontextprotocol.io))
 a real Linux sandbox on hardware *you* control — your laptop, a VPS, a

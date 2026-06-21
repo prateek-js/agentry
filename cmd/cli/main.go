@@ -1,17 +1,17 @@
-// xdp is the user-side daemon and CLI for ad-sandbox.
+// Command agentry is the user-side CLI and MCP server.
 //
-// In the steady state, the user has run `xdp init` once to write a
-// config file and `xdp cluster use <name>` to pick which cluster to
-// drive. Then Claude Desktop / Code is configured to spawn `xdp stdio`,
-// which dials the configured broker over yamux and runs the MCP server
-// with every outbound HTTP call routed through the tunnel.
+// In the steady state, the user has run `agentry login` once and
+// `agentry server use <name>` to pick which server to drive. An AI
+// client (Claude Code / Cursor / Roo / …) is then configured to spawn
+// `agentry mcp`, which dials the configured bridge over yamux and runs
+// the MCP server with every outbound HTTP call routed through the tunnel.
 //
 // Subcommands:
 //
-//	xdp init [--broker URL]      write skeleton ~/.ad-sandbox/xdp.json
-//	xdp cluster current          print the cluster xdp will target
-//	xdp cluster use <name>       set the cluster
-//	xdp stdio                    run the MCP server bound to stdio
+//	agentry login                sign in + write ~/.agentry/agentry.json
+//	agentry server use <name>    set the server to target
+//	agentry mcp                  run the MCP server bound to stdio
+//	agentry sh|logs|vsc <sb>     look inside a running sandbox
 package main
 
 import (
@@ -319,7 +319,7 @@ func cmdMCP(args []string) int {
 		// cluster-default service bind + env var the user staged via
 		// `agentry service bind <service>` / `agentry env set NAME`
 		// (no --sandbox). Real creds + secrets live in
-		// ~/.ad-sandbox/{services,envs}/<cluster>/; they ride the
+		// ~/.agentry/{services,envs}/<cluster>/; they ride the
 		// same tunnel that just created the sandbox. clusterRef.Get is
 		// the same TTL-cached reader the round-tripper uses, so a
 		// fresh sandbox always gets the binds + envs matching the

@@ -24,7 +24,7 @@ func TestDockerMountsFromVolumes(t *testing.T) {
 			Name:      "creds",
 			MountPath: "/etc/sandbox/creds",
 			ReadOnly:  true,
-			HostPath:  &HostPathSource{Path: "/home/u/.ad-sandbox/creds"},
+			HostPath:  &HostPathSource{Path: "/home/u/.agentry/creds"},
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -36,7 +36,7 @@ func TestDockerMountsFromVolumes(t *testing.T) {
 		if m.Type != mount.TypeBind {
 			t.Errorf("Type = %q; want bind", m.Type)
 		}
-		if m.Source != "/home/u/.ad-sandbox/creds" {
+		if m.Source != "/home/u/.agentry/creds" {
 			t.Errorf("Source = %q", m.Source)
 		}
 		if m.Target != "/etc/sandbox/creds" {
