@@ -103,6 +103,8 @@ Full walkthrough, env-var reference, and how to wire an AI client →
 ## Documentation
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the components fit, the data plane, ports, and the security model.
+- **[docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md)** — the zero-trust posture: what stays on your hardware and what's authenticated.
+- **[docs/SERVICE-AND-ENV-MODEL.md](docs/SERVICE-AND-ENV-MODEL.md)** — how bindings + env vars are wired straight into the runtime (the platform never sees them).
 - **[docs/RUNNING-LOCALLY.md](docs/RUNNING-LOCALLY.md)** — run the engine on your machine, end to end, with no third-party services.
 - **[docs/SELF-HOSTING.md](docs/SELF-HOSTING.md)** — what to bring to get the hosted experience (remote access, deploy URLs) on your own hardware.
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — build from source, the `make` targets, and the repo layout.

@@ -112,6 +112,11 @@ follow) pass through the same path.
 
 ## Security model
 
+This is the component-level mechanics. For the high-level posture (what stays
+on your hardware, the zero-trust principles), see
+[SECURITY-MODEL.md](SECURITY-MODEL.md); for how credentials flow, see
+[SERVICE-AND-ENV-MODEL.md](SERVICE-AND-ENV-MODEL.md).
+
 - **Loopback by default.** The provisioner's control API binds `127.0.0.1`,
   so the create/delete/proxy surface isn't exposed to the LAN.
 - **mTLS between CLI ↔ bridge ↔ provisioner** in hosted mode. The bridge
