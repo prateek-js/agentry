@@ -1,3 +1,5 @@
+//go:build !podman
+
 package provisioner
 
 import (
@@ -19,7 +21,6 @@ import (
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -658,7 +659,5 @@ func applyDockerResources(hc *container.HostConfig, r *Resources) error {
 		}
 		hc.Memory = q.Value()
 	}
-	// Storage and GPU intentionally skipped — see method comment.
-	_ = corev1.ResourceCPU // keep the corev1 import used in case future fields need it
 	return nil
 }

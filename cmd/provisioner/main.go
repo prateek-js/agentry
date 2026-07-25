@@ -98,6 +98,20 @@ func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
 		b.SetBuilderMode(cfg.BuilderMode)
 		return b, nil
+	case "podman":
+		posture := "strict"
+		if cfg.BuilderMode {
+			posture = "builder (SYS_ADMIN, unconfined seccomp)"
+		}
+		log.Printf("provisioner: backend=podman (image=%s host=%s shm=%dB security=%s)",
+			cfg.SandboxImage, cfg.NodeHost, cfg.DefaultShmBytes, posture)
+		b, err := provisioner.NewPodmanBackend(nil, cfg.SandboxImage, cfg.NodeHost)
+		if err != nil {
+			return nil, err
+		}
+		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
+		b.SetBuilderMode(cfg.BuilderMode)
+		return b, nil
 
 	// Kubernetes — and the stronger-isolation runtimes that ride on it,
 	// Kata + gVisor — are on the roadmap but NOT ready: the current pod
