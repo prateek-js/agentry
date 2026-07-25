@@ -66,15 +66,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     WORKSPACE=/workspace \
-    NODE_PATH=/usr/lib/node_modules
+    NVM_DIR=/usr/local/nvm
 
-# Trimmed system layer. Notes on what we *don't* install:
-#   - tar:   already in python:3.13-slim's base
-#   - wget:  curl covers every fetch we need
-#   - gnupg: NodeSource's setup script uses signed-by URLs over HTTPS
-#            and doesn't need a separate gpg binary on disk
-#   - build-essential: pip wheels cover the common case; users can
-#            install on demand if they need to compile from source
 ARG NODE_VERSION=22.12.0
 ARG GH_VERSION=2.62.0
 ARG TARGETARCH
@@ -117,29 +110,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # NET_ADMIN, so the LLM inside can't rewrite the rules.
         nftables \
     ; \
-    # Node.js as an upstream binary tarball. Much smaller than the
-    # NodeSource deb (which bundles bonus tooling we don't use), and
-    # avoids the apt overhead of pulling in libicu et al twice.
-    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-        amd64) NODE_ARCH=x64;   AWS_ARCH=x86_64;  GH_ARCH=amd64 ;; \
-        arm64) NODE_ARCH=arm64; AWS_ARCH=aarch64; GH_ARCH=arm64 ;; \
-        *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
-        -o /tmp/node.tar.xz; \
-    mkdir -p /opt/node; \
-    tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1; \
-    rm /tmp/node.tar.xz; \
-    # Trim Node's bundled npm docs / man pages — saves ~15 MB and we
-    # never surface them.
-    rm -rf /opt/node/share/doc /opt/node/share/man /opt/node/share/systemtap; \
-    rm -rf /opt/node/lib/node_modules/npm/docs /opt/node/lib/node_modules/npm/man; \
-    ln -s /opt/node/bin/node /usr/local/bin/node; \
-    ln -s /opt/node/bin/npm /usr/local/bin/npm; \
-    ln -s /opt/node/bin/npx /usr/local/bin/npx; \
+    # Install nvm
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash; \
+    . "$NVM_DIR/nvm.sh" && nvm install "$NODE_VERSION"; \
+    . "$NVM_DIR/nvm.sh" && nvm use "$NODE_VERSION"; \
+    . "$NVM_DIR/nvm.sh" && nvm alias default "$NODE_VERSION"; \
     # AWS CLI v2 — official installer. The apt `awscli` package is
     # still v1 on bookworm; v2 is required for the modern auth /
     # `aws ecr get-login-password` flow most callers expect.
+    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+        amd64) AWS_ARCH=x86_64;  GH_ARCH=amd64 ;; \
+        arm64) AWS_ARCH=aarch64; GH_ARCH=arm64 ;; \
+        *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip; \
     unzip -q /tmp/awscliv2.zip -d /tmp; \
     /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
@@ -219,9 +202,9 @@ RUN cd /opt/agentry/automation && \
     cp -r src package.json template/.agentry/automation/ && \
     sed -i 's#"@agentry/automation": "file:\.\."#"@agentry/automation": "file:./.agentry/automation"#' template/package.json && \
     rm -rf template/node_modules template/.next template/package-lock.json && \
-    (cd template && npm install --package-lock-only --no-audit --no-fund) && \
+    (cd template && . "$NVM_DIR/nvm.sh" && npm install --package-lock-only --no-audit --no-fund) && \
     chmod -R a+rX /opt/agentry/automation && \
-    npm cache clean --force 2>/dev/null || true
+    . "$NVM_DIR/nvm.sh" && npm cache clean --force 2>/dev/null || true
 
 # Apply filesystem hardening + install the restricted shell.
 # lockdown.sh is idempotent and best-effort; it's safe to run at build
