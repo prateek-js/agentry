@@ -20,6 +20,7 @@ type BackendKind string
 const (
 	BackendK8s    BackendKind = "k8s"
 	BackendDocker BackendKind = "docker"
+	BackendPodman BackendKind = "podman"
 )
 
 // Config holds provisioner configuration from environment variables.
@@ -119,16 +120,17 @@ type Config struct {
 // Backend selection:
 //
 //	BACKEND=docker  (default) — provision containers via the local Docker daemon
+//	BACKEND=podman            — provision containers via Podman's Docker-compat socket
 //	BACKEND=k8s               — NOT YET AVAILABLE (coming soon; see newBackend)
 //
-// Docker is the only supported backend today. Kubernetes (and the stronger
+// Docker and Podman are supported today. Kubernetes (and the stronger
 // isolation runtimes that ride on it — Kata, gVisor) are on the roadmap.
 func DefaultConfig() Config {
 	backend := BackendKind(envOr("BACKEND", string(BackendDocker)))
-	// For Docker, "localhost" is the sensible default — clients call
-	// the provisioner from the same host where containers run.
+	// For Docker/Podman, "localhost" is the sensible default — clients
+	// call the provisioner from the same host where containers run.
 	defaultHost := "host.docker.internal"
-	if backend == BackendDocker {
+	if backend == BackendDocker || backend == BackendPodman {
 		defaultHost = "localhost"
 	}
 	return Config{

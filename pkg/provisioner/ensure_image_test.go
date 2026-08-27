@@ -1,6 +1,9 @@
 package provisioner
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestIsMutableTag(t *testing.T) {
 	cases := []struct {
@@ -24,5 +27,31 @@ func TestIsMutableTag(t *testing.T) {
 		if got := isMutableTag(c.ref); got != c.want {
 			t.Errorf("isMutableTag(%q) = %v, want %v", c.ref, got, c.want)
 		}
+	}
+}
+
+func TestIsConflictErr(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"", false},
+		{`Conflict. The container name "/sandbox-abc" is already in use by container "deadbeef"`, true},
+		{"a container with name sandbox-abc already exists", true}, // Podman compat wording
+		{"ALREADY EXISTS", true}, // case-insensitive
+		{"no such image: agentry/runtime:latest", false},
+		{"invalid reference format", false},
+	}
+	for _, c := range cases {
+		var err error
+		if c.msg != "" {
+			err = errors.New(c.msg)
+		}
+		if got := isConflictErr(err); got != c.want {
+			t.Errorf("isConflictErr(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+	if isConflictErr(nil) {
+		t.Error("isConflictErr(nil) = true, want false")
 	}
 }

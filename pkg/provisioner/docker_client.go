@@ -1,5 +1,3 @@
-//go:build !podman
-
 package provisioner
 
 import (
@@ -82,6 +80,14 @@ type DockerBackend struct {
 	// inherits the same posture. Per-sandbox flips are post-v1.
 	builderMode bool
 
+	// podmanCompat is set when cli is pointed at Podman's Docker-compat
+	// socket rather than genuine Docker. Podman's compat layer doesn't
+	// reliably honor every HostConfig field, so this flips on
+	// verify-after-create guards (RuntimeClass, egress netns) that fail
+	// closed instead of silently running unprotected. See
+	// NewPodmanCompatClient.
+	podmanCompat bool
+
 	mu      sync.RWMutex
 	overlay map[string]map[string]string // sandboxID -> mutable annotation overlay
 }
@@ -90,6 +96,13 @@ type DockerBackend struct {
 // docstring. Call once at startup before any sandbox is created.
 func (d *DockerBackend) SetBuilderMode(on bool) {
 	d.builderMode = on
+}
+
+// SetPodmanCompat marks this backend as talking to Podman's Docker-compat
+// socket rather than genuine Docker, enabling verify-after-create guards.
+// See the field docstring. Call once at startup before any sandbox is created.
+func (d *DockerBackend) SetPodmanCompat(on bool) {
+	d.podmanCompat = on
 }
 
 // Client exposes the underlying docker.Client so callers outside the
@@ -280,6 +293,29 @@ func (d *DockerBackend) CreatePod(ctx context.Context, _ string, spec SandboxSpe
 		// doesn't trip the "conflict" branch with a corpse.
 		_ = d.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("container start: %w", err)
+	}
+
+	// Podman's docker-compat layer has been observed to silently drop
+	// HostConfig.Runtime, which would mean a sandbox that asked for
+	// gVisor/Kata isolation actually runs on the default runtime with no
+	// indication anything went wrong. Verify it stuck; fail closed if not.
+	if d.podmanCompat && spec.RuntimeClass != "" {
+		insp, err := d.cli.ContainerInspect(ctx, resp.ID)
+		if err != nil {
+			_ = d.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return fmt.Errorf("runtime verify: inspect after create: %w", err)
+		}
+		got := ""
+		if insp.HostConfig != nil {
+			got = insp.HostConfig.Runtime
+		}
+		if got != spec.RuntimeClass {
+			_ = d.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return fmt.Errorf(
+				"runtime_class %q was requested but podman reports runtime %q — "+
+					"podman's docker-compat layer does not reliably honor HostConfig.Runtime; "+
+					"refusing to run this sandbox on an unverified runtime", spec.RuntimeClass, got)
+		}
 	}
 
 	// Apply egress policy via a transient CAP_NET_ADMIN sidecar that
@@ -632,8 +668,10 @@ func isConflictErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	msg := strings.ToLower(err.Error())
 	return errdefs.IsConflict(err) ||
-		strings.Contains(strings.ToLower(err.Error()), "already in use")
+		strings.Contains(msg, "already in use") ||
+		strings.Contains(msg, "already exists")
 }
 
 // applyDockerResources translates the API-facing Resources struct into

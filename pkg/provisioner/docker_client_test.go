@@ -46,6 +46,35 @@ func requireDocker(t *testing.T) *DockerBackend {
 	return d
 }
 
+// requirePodman skips the test unless a reachable Podman docker-compat
+// socket and the agentry/runtime:latest image are both present. Mirrors
+// requireDocker exactly, but through NewPodmanCompatClient and with the
+// podmanCompat verify-after-create guards enabled.
+func requirePodman(t *testing.T) *DockerBackend {
+	t.Helper()
+	cli, err := NewPodmanCompatClient()
+	if err != nil {
+		t.Skipf("podman-compat SDK init: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		t.Skipf("podman-compat socket unreachable: %v", err)
+	}
+	if _, err := cli.ImageInspect(ctx, "agentry/runtime:latest"); err != nil {
+		if errdefs.IsNotFound(err) {
+			t.Skip("agentry/runtime:latest image missing; build it with `docker build -t agentry/runtime:latest -f docker/Dockerfile .`")
+		}
+		t.Skipf("image inspect failed: %v", err)
+	}
+	d, err := NewDockerBackend(cli, "agentry/runtime:latest", "localhost")
+	if err != nil {
+		t.Fatalf("NewDockerBackend: %v", err)
+	}
+	d.SetPodmanCompat(true)
+	return d
+}
+
 // cleanup forces removal of a container regardless of its current
 // state. Safe to call even if the container is already gone.
 func cleanup(t *testing.T, d *DockerBackend, sandboxID string) {
@@ -334,6 +363,53 @@ func freeLocalPort(t *testing.T) int {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	return port
+}
+
+// TestPodmanRuntimeClassVerified confirms Guard #1's positive path: when
+// podman's docker-compat layer *does* honor HostConfig.Runtime, CreatePod
+// succeeds instead of being (incorrectly) rejected as unverified. A true
+// negative-path test would need a podman that silently drops the field,
+// which isn't deterministically constructible — that gap is acknowledged,
+// not attempted here.
+func TestPodmanRuntimeClassVerified(t *testing.T) {
+	d := requirePodman(t)
+	sid := uniqueID(t)
+	t.Cleanup(func() { cleanup(t, d, sid) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	spec := SandboxSpec{SandboxID: sid, RuntimeClass: "runc"}
+	if err := d.CreatePod(ctx, "", spec); err != nil {
+		t.Fatalf("CreatePod with RuntimeClass=runc: %v", err)
+	}
+	waitForPhase(t, d, "sandbox-"+sid, "Running", 10*time.Second)
+}
+
+// TestPodmanEgressNetworkModeVerified confirms Guard #2's positive path:
+// when the egress sidecar's container:<id> network mode *does* stick
+// under podman, CreatePod with an egress policy succeeds. As with the
+// RuntimeClass guard, the negative path (podman silently rewriting the
+// netmode) isn't deterministically constructible in a test.
+func TestPodmanEgressNetworkModeVerified(t *testing.T) {
+	d := requirePodman(t)
+	sid := uniqueID(t)
+	t.Cleanup(func() { cleanup(t, d, sid) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	spec := SandboxSpec{
+		SandboxID: sid,
+		Egress: EgressPolicy{
+			Mode:  EgressAllow,
+			Rules: []EgressRule{{CIDR: "169.254.169.254/32"}},
+		},
+	}
+	if err := d.CreatePod(ctx, "", spec); err != nil {
+		t.Fatalf("CreatePod with Egress policy: %v", err)
+	}
+	waitForPhase(t, d, "sandbox-"+sid, "Running", 10*time.Second)
 }
 
 // Ensure tests don't accidentally import a stale corev1 — used as a

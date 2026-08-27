@@ -127,11 +127,11 @@ on your hardware, the zero-trust principles), see
   so a co-located process or SSRF that reaches the runtime's loopback port
   can't drive it. With no cert dir (pure local dev) the key is empty and the
   runtime accepts unauthenticated calls.
-- **Sandbox isolation** comes from the backend. Today that's Docker, with a
-  hardened security posture (cap-drop, no-new-privileges, seccomp) plus an
-  optional egress policy and shm sizing. Stronger-isolation runtimes
-  (gVisor, Kata) will arrive with the Kubernetes backend — see
-  [Backends](#backends).
+- **Sandbox isolation** comes from the backend. Today that's Docker (or
+  Podman, via its Docker-compat socket), with a hardened security posture
+  (cap-drop, no-new-privileges, seccomp) plus an optional egress policy and
+  shm sizing. Stronger-isolation runtimes (gVisor, Kata) will arrive with
+  the Kubernetes backend — see [Backends](#backends).
 - **Cert issuance is not in this repo.** Enrollment + CA signing live in the
   closed control plane; the OSS bridge only *consumes* a CA cert. For a
   self-hosted mTLS setup you supply your own CA (see RUNNING-LOCALLY.md).
@@ -139,12 +139,13 @@ on your hardware, the zero-trust principles), see
 ## Backends
 
 The provisioner is backend-agnostic behind a small `Backend` interface
-(create/delete pod + service, exec, list, annotations). Today there is one
-production backend:
+(create/delete pod + service, exec, list, annotations). Today there are two
+production backends:
 
 | Backend | Status | Notes |
 |---|---|---|
 | **Docker** (`BACKEND=docker`) | **Supported** | Single host. Hardened security posture, egress policy, shm sizing, in-sandbox image builds, and deployments all work. This is what the hosted product runs. |
+| **Podman** (`BACKEND=podman`) | **Supported** | Points the same `DockerBackend` at Podman's Docker-compatible API socket (`unix:///run/podman/podman.sock` rootful; set `DOCKER_HOST` for rootless, whose socket path is UID-scoped) instead of a separate implementation — reuses the egress/deploy/build/GC code paths unchanged. Because Podman's compat layer doesn't reliably honor every `HostConfig` field, the backend verifies two risk areas after container creation and fails closed (deletes the container, errors) rather than running unprotected: `runtime_class` actually took effect (compat create can silently ignore `HostConfig.Runtime`), and the egress sidecar's `container:<id>` network mode actually stuck (rootless Podman has been observed to silently rewrite it to host networking). |
 | **Kubernetes** (`BACKEND=k8s`) | **Coming soon** | A pod/service implementation exists but is incomplete (no security-context hardening, egress, shm sizing, or deploy path) and untested — it's gated off and returns "coming soon." A contributor opt-in (`BACKEND=k8s-experimental`) exposes the WIP. |
 | **Kata / gVisor** | **Coming soon** | Stronger sandbox isolation, selected per-pod via `runtime_class` once the Kubernetes backend lands. |
 

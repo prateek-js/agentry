@@ -83,6 +83,28 @@ func (d *DockerBackend) applyEgress(ctx context.Context, mainName, img string, p
 		return fmt.Errorf("egress sidecar start: %w", err)
 	}
 
+	// Rootless Podman has been reported to silently rewrite a
+	// `container:<id>` NetworkMode to host networking, which would mean
+	// the nft rules we're about to install land in the wrong netns —
+	// the sidecar's, not the sandbox's — leaving the sandbox unfiltered
+	// with no indication anything went wrong. Verify it stuck; fail
+	// closed if not.
+	if d.podmanCompat {
+		wantMode := container.NetworkMode("container:" + mainName)
+		insp, err := d.cli.ContainerInspect(ctx, cid)
+		if err != nil {
+			_ = d.cli.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true})
+			return fmt.Errorf("egress netns verify: inspect after start: %w", err)
+		}
+		if insp.HostConfig == nil || insp.HostConfig.NetworkMode != wantMode {
+			_ = d.cli.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true})
+			return fmt.Errorf(
+				"egress sidecar was asked to join netns %q but podman reports a different "+
+					"network mode — rootless podman is known to rewrite container: netmode to "+
+					"host networking; refusing to apply egress rules to the wrong namespace", wantMode)
+		}
+	}
+
 	// Pipe the nft script in, close stdin so `nft -f -` sees EOF.
 	if _, err := io.WriteString(hijack.Conn, script); err != nil {
 		return fmt.Errorf("egress sidecar write: %w", err)

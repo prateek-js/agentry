@@ -80,7 +80,8 @@ func main() {
 }
 
 // newBackend constructs the sandbox backend the user selected via the
-// BACKEND env var. Docker is the only supported backend today;
+// BACKEND env var. Docker and Podman (routed through the Docker-compat
+// socket, reusing the same hardened DockerBackend) are supported today;
 // Kubernetes/Kata/gVisor are stubbed (see the switch below).
 func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 	switch cfg.Backend {
@@ -98,19 +99,24 @@ func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
 		b.SetBuilderMode(cfg.BuilderMode)
 		return b, nil
-	case "podman":
+	case provisioner.BackendPodman:
 		posture := "strict"
 		if cfg.BuilderMode {
 			posture = "builder (SYS_ADMIN, unconfined seccomp)"
 		}
-		log.Printf("provisioner: backend=podman (image=%s host=%s shm=%dB security=%s)",
+		log.Printf("provisioner: backend=podman (docker-compat socket; image=%s host=%s shm=%dB security=%s)",
 			cfg.SandboxImage, cfg.NodeHost, cfg.DefaultShmBytes, posture)
-		b, err := provisioner.NewPodmanBackend(nil, cfg.SandboxImage, cfg.NodeHost)
+		cli, err := provisioner.NewPodmanCompatClient()
+		if err != nil {
+			return nil, fmt.Errorf("podman-compat client init: %w", err)
+		}
+		b, err := provisioner.NewDockerBackend(cli, cfg.SandboxImage, cfg.NodeHost)
 		if err != nil {
 			return nil, err
 		}
 		b.SetDefaultShmBytes(cfg.DefaultShmBytes)
 		b.SetBuilderMode(cfg.BuilderMode)
+		b.SetPodmanCompat(true)
 		return b, nil
 
 	// Kubernetes — and the stronger-isolation runtimes that ride on it,
@@ -130,6 +136,6 @@ func newBackend(cfg provisioner.Config) (provisioner.Backend, error) {
 		return provisioner.NewK8sClient(cfg.KubeconfigPath)
 
 	default:
-		return nil, fmt.Errorf("unknown backend %q (supported: docker)", cfg.Backend)
+		return nil, fmt.Errorf("unknown backend %q (supported: docker, podman)", cfg.Backend)
 	}
 }
